@@ -1,4 +1,4 @@
-# ChibiMate — Phase 2.5
+# ChibiMate — Phase 3
 
 A small, transparent, always-on-top desktop chibi for Windows 10/11.
 Requires Python 3.11 or newer. PySide6 is the only dependency.
@@ -18,21 +18,27 @@ With an activated environment, run `python main.py`.
   Idle periods last 3–8 seconds; walks last 2–5 seconds. Screen edges turn her
   around, and available screen space excludes the taskbar.
 - Hold the left mouse button on the character to drag it. Automatic behavior
-  pauses during dragging and menus, then resumes with an idle period.
+  pauses during dragging and menus; dragging ends with a fresh idle period.
   Releasing outside the desktop brings her fully onto the nearest screen.
-- Right-click the character and choose **Exit** to close the application.
+- Left-click for a random happy, surprised, or shy reaction lasting 1.5–2.5
+  seconds, with a speech bubble for 3 seconds. Dragging never counts as a click.
+  Missing reaction sprites keep the current image and show dialogue instead.
+- Right-click for **Pause Movement / Resume Movement**, **Trigger Random
+  Reaction**, or **Exit ChibiMate**. Pausing still allows dragging and reactions.
 - Sprite PNGs load from `assets/characters/alya/{walk,idle,blink,happy,surprised}/`.
   Numbered names sort naturally (`walk_1.png`, `walk_2.png`, …). Walking loops
   at 8 fps and needs at least two valid frames; idle loops at 2 fps or holds
   a single pose with bobbing. Blink and expression folders can hold one pose.
   The supplied walk sequence is `walk_01.png` through `walk_08.png`, making
   one complete loop per second.
-- During idle, blink frames appear every 3–6 seconds; happy/surprised poses
-  occasionally appear for 1.2 seconds. Walking takes priority over expressions.
+- During idle, blink frames appear every 3–6 seconds. Automatic reactions are
+  scheduled every 20–45 seconds and wait for idle; speech bubbles never stack.
+  Bubbles stay on screen, let mouse clicks through, and hide automatically.
+  An optional `shy/` sprite folder is supported alongside the existing poses.
 - Frames are centered at the feet on a fixed transparent canvas, fit within
   200 × 150 logical pixels, and retain their aspect ratios. Missing, empty,
   or insufficient walk/idle sequences fall back to `assets/alya.png`; missing
-  optional expressions are skipped. If the static PNG is missing or unreadable,
+  reaction poses use dialogue instead. If the static PNG is missing or unreadable,
   a console warning accompanies the built-in placeholder.
   Asset paths work from any launch directory. White-background originals are
   preserved in `assets/characters/alya/originals/`; playback uses the prepared PNGs.
@@ -41,7 +47,8 @@ Adjust `WALK_SPEED` (logical pixels/second), `IDLE_SECONDS`, `WALK_SECONDS`,
 and the bob settings in `app/window.py` to tune the behavior. The character
 stays 150 pixels tall, with a small transparent margin for the idle bob.
 
-Sprite rates and blink/expression intervals are in `app/sprites.py`.
-Phase 2.5 only: folder-based frames using the existing timer; no AI or threads.
+Edit dialogue and reaction timing in `app/dialogue.py`; sprite rates and blink
+timing are in `app/sprites.py`. Phase 3 only: local interactions, without AI,
+voice features, or additional dependencies.
 
 Checks: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`

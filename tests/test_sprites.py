@@ -112,16 +112,33 @@ class SpriteAnimationTests(unittest.TestCase):
         self.assertFalse(player.show_expression('happy', 0))
         self.assertFalse(player.show_expression('happy', float('nan')))
 
-    def test_random_expression_uses_available_pose(self):
+    def test_surprised_reaction_restores_underlying_state(self):
         self.frame('surprised', 'surprise.png')
         player = self.player()
-        player._blink_remaining = 99
-        player._expression_remaining = 0
+        player.set_walking(True)
+        player.begin_reaction('surprised', 2)
         player.advance(0.016)
         self.assertEqual(player.frame_key, ('surprised', 0))
-        self.assertTrue(12 <= player._expression_remaining <= 22)
-        player.advance(1.3)
+        player.end_reaction()
         self.assertEqual(player.frame_key, ('static', 0))
+        self.assertEqual(player.state, 'walk')
+
+    def test_optional_shy_pose_and_missing_reaction_preserve_current_frame(self):
+        self.frame('walk', 'walk_1.png')
+        self.frame('walk', 'walk_2.png', 'blue')
+        self.frame('shy', 'shy.png', 'green')
+        player = self.player()
+        player.set_walking(True)
+        player.advance(0.125)
+        original = player.frame_key
+        player.begin_reaction('happy', 2)
+        player.advance(0.5)
+        self.assertEqual(player.frame_key, original)
+        player.end_reaction()
+        player.begin_reaction('shy', 2)
+        self.assertEqual(player.frame_key, ('shy', 0))
+        player.end_reaction()
+        self.assertEqual(player.frame_key, original)
 
     def test_alignment_size_and_transparency_remain_stable(self):
         self.frame('walk', 'walk_1.png', size=QSize(140, 200), body=QRect(2, 30, 50, 100))

@@ -170,8 +170,8 @@ class CharacterWindowTests(unittest.TestCase):
         QTest.qWait(80)
         self.assertEqual((window._remaining, window.pos(), window._bob_offset, window._sprites._time), before)
         spy = QSignalSpy(window._timer.timeout)
-        action = window._menu.actions()[0]
-        self.assertEqual(action.text(), 'Exit')
+        action = window._menu.actions()[-1]
+        self.assertEqual(action.text(), 'Exit ChibiMate')
         QTest.mouseClick(window._menu, Qt.MouseButton.LeftButton,
                          pos=window._menu.actionGeometry(action).center())
         self.assertFalse(window.isVisible())

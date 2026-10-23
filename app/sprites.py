@@ -13,7 +13,6 @@ from PySide6.QtGui import QBitmap, QImage, QPainter, QPixmap, QRegion
 SPRITE_PATH = Path(__file__).resolve().parent.parent / "assets" / "characters" / "alya"
 FRAME_RATES = {"walk": 8, "idle": 2}
 BLINK_SECONDS = (3.0, 6.0)
-EXPRESSION_SECONDS = (12.0, 22.0)
 
 
 def _frame_order(path: Path) -> list:
@@ -24,7 +23,7 @@ def _frame_order(path: Path) -> list:
 class SpriteAnimation:
     def __init__(self, root: Path, fallback: QPixmap, max_size: QSize) -> None:
         self.frames: dict[str, list[QPixmap]] = {"static": [fallback]}
-        for name in ("walk", "idle", "blink", "happy", "surprised"):
+        for name in ("walk", "idle", "blink", "happy", "surprised", "shy"):
             frames = []
             folder = root / name
             paths = sorted(folder.glob("*.png"), key=_frame_order)
@@ -49,7 +48,9 @@ class SpriteAnimation:
         self._max_size = QSize(max_size)
         self._random = Random()
         self._blink_remaining = self._random.uniform(*BLINK_SECONDS)
-        self._expression_remaining = self._random.uniform(*EXPRESSION_SECONDS)
+        self._reaction_frame: tuple[str, int] | None = None
+        self._reaction_time = 0.0
+        self._reaction_duration = 1.0
         self._temporary_remaining = 0.0
         self._temporary_duration = 0.0
         self._walking = False
@@ -69,7 +70,7 @@ class SpriteAnimation:
         self._select("walk" if walking else "idle")
 
     def show_expression(self, name: str, duration: float = 1.2) -> bool:
-        if self._walking or name not in ("blink", "happy", "surprised") or name not in self.frames:
+        if self._reaction_frame is not None or self._walking or name not in ("blink", "happy", "surprised", "shy") or name not in self.frames:
             return False
         if not math.isfinite(duration) or duration <= 0:
             return False
@@ -79,7 +80,21 @@ class SpriteAnimation:
         self._temporary_remaining = duration
         return True
 
+    def begin_reaction(self, name: str, duration: float) -> None:
+        # Overlay the pose while keeping the underlying walk/idle phase intact.
+        # If the pose is absent, freeze the exact frame that was already visible.
+        self._reaction_frame = (name, 0) if name in self.frames else self.frame_key
+        self._reaction_duration = duration
+        self._reaction_time = 0.0
+        self._reaction_animated = name in self.frames
+
+    def end_reaction(self) -> None:
+        self._reaction_frame = None
+
     def advance(self, elapsed: float) -> None:
+        if self._reaction_frame is not None:
+            self._reaction_time += elapsed
+            return
         if not self._walking:
             if self._temporary_remaining > 0:
                 self._temporary_remaining = max(0.0, self._temporary_remaining - elapsed)
@@ -87,19 +102,19 @@ class SpriteAnimation:
                     self._select("idle")
             else:
                 self._blink_remaining -= elapsed
-                self._expression_remaining -= elapsed
                 if self._blink_remaining <= 0:
                     self._blink_remaining = self._random.uniform(*BLINK_SECONDS)
                     self.show_expression("blink", 0.22)
-                elif self._expression_remaining <= 0:
-                    self._expression_remaining = self._random.uniform(*EXPRESSION_SECONDS)
-                    available = [name for name in ("happy", "surprised") if name in self.frames]
-                    if available:
-                        self.show_expression(self._random.choice(available))
         self._time += elapsed
 
     @property
     def frame_key(self) -> tuple[str, int]:
+        if self._reaction_frame is not None:
+            name, index = self._reaction_frame
+            if self._reaction_animated:
+                count = len(self.frames[name])
+                index = min(count - 1, int(self._reaction_time / self._reaction_duration * count))
+            return name, index
         name = self.state if self.state in self.frames else "static"
         count = len(self.frames[name])
         if self._temporary_remaining > 0:
