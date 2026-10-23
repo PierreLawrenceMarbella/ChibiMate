@@ -1,4 +1,4 @@
-"""Launch ChibiMate's Phase 1 desktop companion."""
+"""Launch the ChibiMate desktop companion."""
 
 import sys
 
