@@ -1,4 +1,4 @@
-# ChibiMate — Phase 6
+# ChibiMate - Phase 7
 
 A small, transparent, always-on-top desktop chibi for Windows 10/11.
 Requires Python 3.11 or newer. Dependencies are PySide6 and the official OpenAI Python SDK.
@@ -85,3 +85,20 @@ Preview results before choosing **Use as ChibiMate** or **Save PNG**. Accepted
 characters are saved in `%LOCALAPPDATA%\ChibiMate\generated-characters`, retain
 your size preference, and use static movement and dialogue. Rejected previews
 stay out of persistent storage. Reference files and Alya's sprites are unchanged.
+
+## Offline animation packs
+
+Choose your custom PNG with **Change Character**, then **Import Animation Pack**.
+Select a folder or ZIP containing `idle/`, `walk/`, `blink/`, `happy/`,
+`surprised/`, optional `shy/`, and/or `dance/` PNG frames. A ZIP may wrap these
+inside one character folder. Preview available actions, choose 8?12 FPS for
+walking/dancing, then apply or cancel. Missing actions use the character PNG or
+dialogue; walking and dancing need at least two distinct poses.
+
+Accepted packs live in `%LOCALAPPDATA%\ChibiMate\animation-packs`. Associations
+survive restarts; selecting the same unchanged PNG again restores its pack.
+Alya keeps her bundled sprites. Source assets are never overwritten.
+Imports are limited to 256 PNGs, 2048px per side, 12 MB per frame, 24 megapixels
+decoded total, and 100 MB compressed/expanded. Unsafe paths, links, damaged
+images, and duplicate paths are rejected. This workflow is entirely offline,
+needs no API key, and does not create animation artwork from a static image.

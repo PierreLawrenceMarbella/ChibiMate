@@ -52,7 +52,8 @@ def _visible_bounds(image: QImage) -> QRect:
 
 
 class SpriteAnimation:
-    def __init__(self, root: Path | None, fallback: QPixmap, max_size: QSize) -> None:
+    def __init__(self, root: Path | None, fallback: QPixmap, max_size: QSize, motion_fps: int | None = None) -> None:
+        self.motion_fps = motion_fps
         self.frames: dict[str, list[QPixmap]] = {"static": [fallback]}
         for name in ("walk", "idle", "blink", "happy", "surprised", "shy", "dance"):
             frames = []
@@ -212,7 +213,8 @@ class SpriteAnimation:
             progress = 1 - self._temporary_remaining / self._temporary_duration
             index = min(count - 1, int(progress * count))
         else:
-            index = int(self._time * FRAME_RATES.get(name, 1)) % count
+            rate = self.motion_fps if self.motion_fps is not None and name in ("walk", "dance") else FRAME_RATES.get(name, 1)
+            index = int(self._time * rate) % count
         return name, index
 
     def pixmap(self, dpr: float) -> QPixmap:

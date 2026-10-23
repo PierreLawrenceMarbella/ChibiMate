@@ -1,6 +1,8 @@
 """Local character preferences and app-owned copies of imported PNGs."""
 
 import logging
+import hashlib
+import shutil
 import re
 from pathlib import Path
 from uuid import uuid4
@@ -100,3 +102,47 @@ class CharacterPreferences:
             (self.directory / filename).unlink(missing_ok=True)
             raise
         return filename, QPixmap.fromImage(image)
+
+    def _pack_key(self, filename: str) -> str:
+        # Identical imported PNGs recover their association even from a new path.
+        return "packs/" + hashlib.sha256((self.directory / filename).read_bytes()).hexdigest()
+
+    def pack_for(self, filename: str) -> tuple[Path | None, int]:
+        if not filename:
+            return None, 8
+        try:
+            key = self._pack_key(filename)
+            name = self.settings.value(key + "/folder", "")
+            fps = int(self.settings.value(key + "/fps", 8))
+            if not isinstance(name, str) or not re.fullmatch(r"pack-[0-9a-f]{32}", name):
+                return None, 8
+            path = self.directory / "animation-packs" / name
+            if path.is_dir():
+                return path, fps if 8 <= fps <= 12 else 8
+            logging.getLogger(__name__).warning("Saved animation pack is missing; using the character PNG.")
+        except (OSError, ValueError, TypeError):
+            logging.getLogger(__name__).warning("Saved animation pack is unavailable; using the character PNG.")
+        return None, 8
+
+    def accept_pack(self, filename: str, staged: Path, fps: int) -> None:
+        if not filename or fps not in range(8, 13):
+            raise ValueError("Select a custom character and a speed from 8 to 12 FPS.")
+        key = self._pack_key(filename)
+        parent = self.directory / "animation-packs"
+        parent.mkdir(parents=True, exist_ok=True)
+        destination = parent / ("pack-" + uuid4().hex)
+        previous = (self.settings.value(key + "/folder", ""), self.settings.value(key + "/fps", 8))
+        try:
+            shutil.copytree(staged, destination)
+            self.settings.setValue(key + "/folder", destination.name)
+            self.settings.setValue(key + "/fps", fps)
+            self.settings.sync()
+            if self.settings.status() != QSettings.Status.NoError:
+                raise OSError("Could not save the animation pack association.")
+        except OSError:
+            self.settings.setValue(key + "/folder", previous[0])
+            self.settings.setValue(key + "/fps", previous[1])
+            self.settings.sync()
+            if destination.resolve().parent == parent.resolve() and destination.exists():
+                shutil.rmtree(destination)
+            raise

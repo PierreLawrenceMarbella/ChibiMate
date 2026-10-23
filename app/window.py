@@ -15,7 +15,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPixmap,
 )
-from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMenu, QMessageBox, QWidget
 
 from app.character import create_placeholder
 from app.bubble import SpeechBubble
@@ -66,8 +66,10 @@ class CharacterWindow(QWidget):
         self._custom_file, saved_character = self._preferences.load_character()
 
         self._character = saved_character if saved_character is not None else self._load_default_character()
+        pack_root, pack_fps = self._preferences.pack_for(self._custom_file)
         self._sprites = SpriteAnimation(
-            None if self._custom_file else sprite_path, self._character, self._display_limit(),
+            pack_root if self._custom_file else sprite_path, self._character, self._display_limit(),
+            pack_fps if self._custom_file else None,
         )
         self._character_size = self._sprites.size
         # Reserve transparent space so bobbing never crops the head or feet.
@@ -92,6 +94,7 @@ class CharacterWindow(QWidget):
             self._size_actions[height] = action
         self._menu.addAction("Restore Default Alya", self.restore_default)
         self._menu.addAction("AI Chibi Generator", self.open_generator)
+        self._pack_action = self._menu.addAction("Import Animation Pack", self.import_animation_pack)
         self._menu.addSeparator()
         self._pause_action = self._menu.addAction("Pause Movement", self._toggle_movement)
         self._reaction_action = self._menu.addAction(
@@ -156,8 +159,10 @@ class CharacterWindow(QWidget):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._character = character
         self._custom_file = filename
+        pack_root, pack_fps = self._preferences.pack_for(filename)
         self._sprites = SpriteAnimation(
-            None if filename else self._default_sprite_path, character, self._display_limit(),
+            pack_root if filename else self._default_sprite_path, character, self._display_limit(),
+            pack_fps if filename else None,
         )
         self._bob_offset = 0.0
         self._resize_character()
@@ -219,6 +224,28 @@ class CharacterWindow(QWidget):
         self._generator.show()
         self._generator.raise_()
         self._generator.activateWindow()
+
+    def import_animation_pack(self) -> None:
+        if not self._custom_file:
+            QMessageBox.information(self, "Animation Pack", "Choose a custom character with Change Character first.")
+            return
+        from app.pack_dialog import PackDialog
+        filename = self._custom_file
+        dialog = PackDialog(self._character, self)
+        dialog.fps.setValue(self._preferences.pack_for(filename)[1])
+        self._dialog_open = True
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted and dialog.staging and filename == self._custom_file:
+                self._preferences.accept_pack(filename, Path(dialog.staging.name), dialog.fps.value())
+                self._apply_character(self._character, filename)
+        except (OSError, ValueError) as error:
+            self._show_character_error(error)
+        finally:
+            dialog.cleanup()
+            dialog.deleteLater()
+            self._dialog_open = False
+            self._clock.restart()
+            self._update_menu()
 
     def _accept_generated(self, data: bytes) -> None:
         try:
@@ -299,6 +326,7 @@ class CharacterWindow(QWidget):
         self._clock.restart()
 
     def _update_menu(self) -> None:
+        self._pack_action.setEnabled(bool(self._custom_file))
         for height, action in self._size_actions.items():
             action.setChecked(height == self._character_height)
         self._pause_action.setText("Resume Movement" if self._movement_paused else "Pause Movement")
