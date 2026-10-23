@@ -1,5 +1,6 @@
 """A transparent, draggable desktop character."""
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSize, Qt
@@ -15,8 +16,8 @@ from PySide6.QtWidgets import QApplication, QMenu, QWidget
 from app.character import create_placeholder
 
 
-CHARACTER_PATH = Path(__file__).resolve().parent.parent / "assets" / "character.png"
-MAX_CHARACTER_SIZE = QSize(200, 240)
+CHARACTER_PATH = Path(__file__).resolve().parent.parent / "assets" / "alya.png"
+MAX_CHARACTER_SIZE = QSize(200, 150)
 
 
 class CharacterWindow(QWidget):
@@ -36,6 +37,10 @@ class CharacterWindow(QWidget):
         if character_path.is_file():
             self._character.load(str(character_path), "PNG")
         if self._character.isNull():
+            logging.getLogger(__name__).warning(
+                "Character PNG is missing or unreadable: %s. Using the built-in placeholder.",
+                character_path,
+            )
             self._character = create_placeholder()
         self.setFixedSize(
             self._character.size().scaled(
