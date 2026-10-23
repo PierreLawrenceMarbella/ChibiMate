@@ -1,4 +1,4 @@
-# ChibiMate — Phase 2
+# ChibiMate — Phase 2.5
 
 A small, transparent, always-on-top desktop chibi for Windows 10/11.
 Requires Python 3.11 or newer. PySide6 is the only dependency.
@@ -21,16 +21,25 @@ With an activated environment, run `python main.py`.
   pauses during dragging and menus, then resumes with an idle period.
   Releasing outside the desktop brings her fully onto the nearest screen.
 - Right-click the character and choose **Exit** to close the application.
-- Alya loads from `assets/alya.png` at 150 logical pixels tall by default.
-  Images fit within 200 × 150 logical pixels without cropping, preserving
-  their transparency and aspect ratio. Missing or unreadable images print a
-  warning to the console and use the original, Qt-drawn chibi placeholder.
-  Asset paths work regardless of the terminal's current directory.
+- Sprite PNGs load from `assets/characters/alya/{walk,idle,blink,happy,surprised}/`.
+  Numbered names sort naturally (`walk_1.png`, `walk_2.png`, …). Walking loops
+  at 8 fps and needs at least two valid frames; idle loops at 2 fps or holds
+  a single pose with bobbing. Blink and expression folders can hold one pose.
+- During idle, blink frames appear every 3–6 seconds; happy/surprised poses
+  occasionally appear for 1.2 seconds. Walking takes priority over expressions.
+- Frames are centered at the feet on a fixed transparent canvas, fit within
+  200 × 150 logical pixels, and retain their aspect ratios. Missing, empty,
+  or insufficient walk/idle sequences fall back to `assets/alya.png`; missing
+  optional expressions are skipped. If the static PNG is missing or unreadable,
+  a console warning accompanies the built-in placeholder.
+  Asset paths work from any launch directory. White-background originals are
+  preserved in `assets/characters/alya/originals/`; playback uses the prepared PNGs.
 
 Adjust `WALK_SPEED` (logical pixels/second), `IDLE_SECONDS`, `WALK_SECONDS`,
 and the bob settings in `app/window.py` to tune the behavior. The character
 stays 150 pixels tall, with a small transparent margin for the idle bob.
 
-Phase 2 only: static-PNG movement and bobbing; no sprite sheets, AI, or threads.
+Sprite rates and blink/expression intervals are in `app/sprites.py`.
+Phase 2.5 only: folder-based frames using the existing timer; no AI or threads.
 
 Checks: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`

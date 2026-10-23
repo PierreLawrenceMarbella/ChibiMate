@@ -120,10 +120,10 @@ class CharacterWindowTests(unittest.TestCase):
         start = window.pos()
         global_start = window.mapToGlobal(local)
         QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=local)
-        before = (window._remaining, window._bob_offset, window.pos())
+        before = (window._remaining, window._bob_offset, window.pos(), window._sprites._time)
         window._timer.start()
         QTest.qWait(100)
-        self.assertEqual((window._remaining, window._bob_offset, window.pos()), before)
+        self.assertEqual((window._remaining, window._bob_offset, window.pos(), window._sprites._time), before)
         delta = QPoint(-50, -30)
         self.app.sendEvent(window, QMouseEvent(
             QEvent.Type.MouseMove, QPointF(local + delta), QPointF(global_start + delta),
@@ -165,10 +165,10 @@ class CharacterWindowTests(unittest.TestCase):
             QContextMenuEvent.Reason.Mouse, local, window.mapToGlobal(local),
         ))
         self.assertTrue(window._menu.isVisible())
-        before = (window._remaining, window.pos(), window._bob_offset)
+        before = (window._remaining, window.pos(), window._bob_offset, window._sprites._time)
         window._timer.start()
         QTest.qWait(80)
-        self.assertEqual((window._remaining, window.pos(), window._bob_offset), before)
+        self.assertEqual((window._remaining, window.pos(), window._bob_offset, window._sprites._time), before)
         spy = QSignalSpy(window._timer.timeout)
         action = window._menu.actions()[0]
         self.assertEqual(action.text(), 'Exit')
@@ -200,7 +200,7 @@ class CharacterWindowTests(unittest.TestCase):
     def test_missing_image_still_warns_and_animates_placeholder(self):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertLogs('app.window', level='WARNING'):
-                fallback = CharacterWindow(Path(folder) / 'missing.png')
+                fallback = CharacterWindow(Path(folder) / 'missing.png', Path(folder) / 'frames')
             try:
                 self.assertFalse(fallback._character.isNull())
                 fallback._advance(0.02)

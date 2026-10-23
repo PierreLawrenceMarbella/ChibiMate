@@ -17,6 +17,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QMenu, QWidget
 
 from app.character import create_placeholder
+from app.sprites import SPRITE_PATH, SpriteAnimation
 
 
 CHARACTER_PATH = Path(__file__).resolve().parent.parent / "assets" / "alya.png"
@@ -30,7 +31,8 @@ BOB_PADDING = math.ceil(BOB_AMPLITUDE)
 
 
 class CharacterWindow(QWidget):
-    def __init__(self, character_path: Path = CHARACTER_PATH) -> None:
+    def __init__(self, character_path: Path = CHARACTER_PATH,
+                 sprite_path: Path = SPRITE_PATH) -> None:
         super().__init__()
         self.setWindowTitle("ChibiMate")
         self.setWindowFlags(
@@ -51,11 +53,8 @@ class CharacterWindow(QWidget):
                 character_path,
             )
             self._character = create_placeholder()
-        self._character_size = self._character.size().scaled(
-            MAX_CHARACTER_SIZE, Qt.AspectRatioMode.KeepAspectRatio
-        )
-        self._paint_character = QPixmap()
-        self._paint_dpr = 0.0
+        self._sprites = SpriteAnimation(sprite_path, self._character, MAX_CHARACTER_SIZE)
+        self._character_size = self._sprites.size
         # Reserve transparent space so bobbing never crops the head or feet.
         self.setFixedSize(
             self._character_size.width(),
@@ -118,12 +117,14 @@ class CharacterWindow(QWidget):
 
     def _start_idle(self) -> None:
         self._walking = False
+        self._sprites.set_walking(False)
         self._remaining = random.uniform(*IDLE_SECONDS)
         self._idle_phase = 0.0
         self._walk_x = float(self.x())
 
     def _start_walk(self) -> None:
         self._walking = True
+        self._sprites.set_walking(True)
         self._direction = random.choice((-1, 1))
         self._remaining = random.uniform(*WALK_SECONDS)
         self._walk_x = float(self.x())
@@ -169,29 +170,31 @@ class CharacterWindow(QWidget):
             target_bob = BOB_AMPLITUDE * math.sin(math.tau * self._idle_phase / BOB_PERIOD)
         # Ease to neutral when walking starts instead of snapping vertically.
         self._bob_offset += (target_bob - self._bob_offset) * (1 - math.exp(-12 * elapsed))
+        self._sprites.advance(elapsed)
         self.update()
 
+    def show_expression(self, name: str, duration: float = 1.2) -> bool:
+        if self._drag_offset is not None or self._menu.isVisible():
+            return False
+        shown = self._sprites.show_expression(name, duration)
+        if shown:
+            self.update()
+        return shown
+
     def paintEvent(self, event: QPaintEvent) -> None:
-        # Scale once per display pixel ratio, not from the full PNG every frame.
-        dpr = self.devicePixelRatioF()
-        if self._paint_dpr != dpr:
-            self._paint_character = self._character.scaled(
-                round(self._character_size.width() * dpr),
-                round(self._character_size.height() * dpr),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            self._paint_dpr = dpr
+        frame = self._sprites.pixmap(self.devicePixelRatioF())
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         if self._direction < 0:
-            painter.translate(self.width(), 0)
+            # Align the mirror axis to physical pixels on fractional-DPI screens.
+            dpr = self.devicePixelRatioF()
+            painter.translate(round(self.width() * dpr) / dpr, 0)
             painter.scale(-1, 1)
         target = QRectF(
             0, BOB_PADDING + self._bob_offset,
             self._character_size.width(), self._character_size.height(),
         )
-        painter.drawPixmap(target, self._paint_character, QRectF(self._paint_character.rect()))
+        painter.drawPixmap(target, frame, QRectF(frame.rect()))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
