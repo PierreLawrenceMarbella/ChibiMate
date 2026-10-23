@@ -88,7 +88,8 @@ stay out of persistent storage. Reference files and Alya's sprites are unchanged
 
 ## Offline animation packs
 
-Choose your custom PNG with **Change Character**, then **Import Animation Pack**.
+Right-click **Import Animation Pack** to add animations to the current character,
+including default Alya. For another character, choose its PNG with **Change Character** first.
 Select a folder or ZIP containing `idle/`, `walk/`, `blink/`, `happy/`,
 `surprised/`, optional `shy/`, and/or `dance/` PNG frames. A ZIP may wrap these
 inside one character folder. Preview available actions, choose 8?12 FPS for
@@ -97,7 +98,10 @@ dialogue; walking and dancing need at least two distinct poses.
 
 Accepted packs live in `%LOCALAPPDATA%\ChibiMate\animation-packs`. Associations
 survive restarts; selecting the same unchanged PNG again restores its pack.
-Alya keeps her bundled sprites. Source assets are never overwritten.
+Alya's imported pack is saved separately from her bundled sprites and persists
+across restarts. Imported actions replace matching actions; missing actions keep
+her bundled animations. **Restore Default Alya** restores her original bundled animations
+while preserving your size preference. Source assets are never overwritten.
 Imports are limited to 256 PNGs, 2048px per side, 12 MB per frame, 24 megapixels
 decoded total, and 100 MB compressed/expanded. Unsafe paths, links, damaged
 images, and duplicate paths are rejected. This workflow is entirely offline,

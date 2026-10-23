@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QDialog
 from app.packs import validate_pack
 from app.pack_dialog import PackDialog
 from app.preferences import CharacterPreferences
-from app.window import CharacterWindow
+from app.window import CHARACTER_PATH, CharacterWindow
 
 
 class PackTests(unittest.TestCase):
@@ -210,6 +210,117 @@ class PackTests(unittest.TestCase):
         self.assertEqual(self.window._sprites.motion_fps, 11)
         self.assertEqual(len(self.window._sprites.frames['walk']), 4)
         self.assertTrue(self.window._available_area().contains(self.window.geometry()))
+
+    def test_default_alya_can_import_restart_and_restore_bundled_animations(self):
+        self.frames(4)
+        original = CHARACTER_PATH.read_bytes()
+        self.window.restore_default()
+        self.window.set_character_size(200)
+        self.assertEqual(self.window._custom_file, '')
+        self.assertTrue(self.window._pack_action.isEnabled())
+
+        def accept(dialog):
+            self.assertIn('Alya', dialog.windowTitle())
+            dialog.load_source(self.pack)
+            dialog.fps.setValue(11)
+            return QDialog.DialogCode.Accepted
+
+        with patch.object(PackDialog, 'exec', accept):
+            self.window._pack_action.trigger()
+        self.assertEqual(len(self.window._sprites.frames['walk']), 4)
+        self.assertEqual(self.window._sprites.motion_fps, 11)
+        saved, fps = self.prefs.pack_for('')
+        self.assertTrue(saved.is_dir())
+        self.assertEqual(fps, 11)
+        reopened = CharacterWindow(preferences=CharacterPreferences(self.prefs.directory))
+        try:
+            self.assertEqual(reopened._custom_file, '')
+            self.assertEqual(reopened._character_height, 200)
+            self.assertEqual(len(reopened._sprites.frames['walk']), 4)
+            self.assertEqual(reopened._sprites.motion_fps, 11)
+            reopened._start_walk()
+            reopened._sprites.advance(1 / 11)
+            self.assertEqual(reopened._sprites.frame_key, ('walk', 1))
+        finally:
+            reopened.close()
+            reopened.deleteLater()
+
+        # Even a custom copy of Alya's PNG must not inherit the default override.
+        copied_id, copied = self.prefs.import_character(CHARACTER_PATH, 200)
+        self.window._apply_character(copied, copied_id)
+        self.assertEqual(set(self.window._sprites.frames), {'static'})
+        self.window.restore_default()
+        self.assertEqual(self.prefs.pack_for(''), (None, 8))
+        self.assertEqual(len(self.window._sprites.frames['walk']), 8)
+        self.assertEqual(self.window._character_height, 200)
+        self.assertTrue(saved.is_dir())
+        self.assertEqual(CHARACTER_PATH.read_bytes(), original)
+
+    def test_cancel_default_import_and_missing_pack_preserve_alya(self):
+        self.frames(4)
+        self.window.restore_default()
+        self.dialog.load_source(self.pack)
+        self.prefs.accept_pack('', Path(self.dialog.staging.name), 10)
+        self.window._apply_character(self.window._character, '')
+        before = self.prefs.pack_for('')
+
+        def cancel(dialog):
+            dialog.load_source(self.pack)
+            return QDialog.DialogCode.Rejected
+
+        with patch.object(PackDialog, 'exec', cancel):
+            self.window.import_animation_pack()
+        self.assertEqual(self.prefs.pack_for(''), before)
+        self.assertEqual(len(self.window._sprites.frames['walk']), 4)
+        saved, _ = before
+        saved.rename(saved.with_name(saved.name + '-missing'))
+        with self.assertLogs('app.preferences', level='WARNING'):
+            reopened = CharacterWindow(preferences=CharacterPreferences(self.prefs.directory))
+        try:
+            self.assertEqual(len(reopened._sprites.frames['walk']), 8)
+            self.assertEqual(reopened._custom_file, '')
+        finally:
+            reopened.close()
+            reopened.deleteLater()
+
+    def test_restore_only_clears_default_pack_and_rolls_back_if_saving_fails(self):
+        self.frames(4)
+        self.dialog.load_source(self.pack)
+        staged = Path(self.dialog.staging.name)
+        self.prefs.accept_pack(self.filename, staged, 9)
+        self.prefs.accept_pack('', staged, 10)
+        custom = self.prefs.pack_for(self.filename)
+        default = self.prefs.pack_for('')
+        with patch.object(self.prefs, 'save', side_effect=OSError('Cannot write settings')):
+            with self.assertRaises(OSError):
+                self.prefs.restore_default(150)
+        self.assertEqual(self.prefs.pack_for(''), default)
+        self.assertEqual(self.prefs.pack_for(self.filename), custom)
+        self.prefs.restore_default(150)
+        fresh = CharacterPreferences(self.prefs.directory)
+        self.assertEqual(fresh.pack_for(''), (None, 8))
+        self.assertEqual(fresh.pack_for(self.filename), custom)
+
+    def test_dance_only_pack_keeps_bundled_alya_actions_without_custom_mixing(self):
+        self.png(self.pack / 'dance' / 'dance_1.png', 'red')
+        self.png(self.pack / 'dance' / 'dance_2.png', 'blue')
+        self.window.restore_default()
+        def accept(dialog):
+            dialog.load_source(self.pack)
+            return QDialog.DialogCode.Accepted
+        with patch.object(PackDialog, 'exec', accept):
+            self.window.import_animation_pack()
+        self.assertEqual(len(self.window._sprites.frames['walk']), 8)
+        self.assertIn('blink', self.window._sprites.frames)
+        self.assertIn('idle', self.window._sprites.frames)
+        self.assertTrue(self.window.start_dance())
+        self.window._advance(7)
+        self.assertEqual(self.window._sprites.frame_key, ('idle', 0))
+
+        self.dialog.load_source(self.pack)
+        self.prefs.accept_pack(self.filename, Path(self.dialog.staging.name), 8)
+        self.window._apply_character(self.character, self.filename)
+        self.assertEqual(set(self.window._sprites.frames), {'static', 'dance'})
 
 
 if __name__ == '__main__':

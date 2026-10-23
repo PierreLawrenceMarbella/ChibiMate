@@ -68,8 +68,9 @@ class CharacterWindow(QWidget):
         self._character = saved_character if saved_character is not None else self._load_default_character()
         pack_root, pack_fps = self._preferences.pack_for(self._custom_file)
         self._sprites = SpriteAnimation(
-            pack_root if self._custom_file else sprite_path, self._character, self._display_limit(),
-            pack_fps if self._custom_file else None,
+            pack_root or (None if self._custom_file else sprite_path), self._character, self._display_limit(),
+            pack_fps if pack_root is not None else None,
+            fallback_root=sprite_path if pack_root is not None and not self._custom_file else None,
         )
         self._character_size = self._sprites.size
         # Reserve transparent space so bobbing never crops the head or feet.
@@ -161,8 +162,9 @@ class CharacterWindow(QWidget):
         self._custom_file = filename
         pack_root, pack_fps = self._preferences.pack_for(filename)
         self._sprites = SpriteAnimation(
-            pack_root if filename else self._default_sprite_path, character, self._display_limit(),
-            pack_fps if filename else None,
+            pack_root or (None if filename else self._default_sprite_path), character, self._display_limit(),
+            pack_fps if pack_root is not None else None,
+            fallback_root=self._default_sprite_path if pack_root is not None and not filename else None,
         )
         self._bob_offset = 0.0
         self._resize_character()
@@ -210,7 +212,7 @@ class CharacterWindow(QWidget):
 
     def restore_default(self) -> None:
         try:
-            self._preferences.save("", self._character_height)
+            self._preferences.restore_default(self._character_height)
             self._apply_character(self._load_default_character(), "")
         except OSError as error:
             self._show_character_error(error)
@@ -226,12 +228,15 @@ class CharacterWindow(QWidget):
         self._generator.activateWindow()
 
     def import_animation_pack(self) -> None:
-        if not self._custom_file:
-            QMessageBox.information(self, "Animation Pack", "Choose a custom character with Change Character first.")
-            return
         from app.pack_dialog import PackDialog
         filename = self._custom_file
         dialog = PackDialog(self._character, self)
+        if not filename:
+            dialog.setWindowTitle("Import Animation Pack - Alya")
+            dialog.fallback_description = (
+                "Missing or insufficient actions keep bundled Alya animations when available, otherwise her static PNG/dialogue."
+            )
+            dialog.status.setText("Import new Alya actions. Actions absent from the pack keep their bundled animations.")
         dialog.fps.setValue(self._preferences.pack_for(filename)[1])
         self._dialog_open = True
         try:
@@ -326,7 +331,6 @@ class CharacterWindow(QWidget):
         self._clock.restart()
 
     def _update_menu(self) -> None:
-        self._pack_action.setEnabled(bool(self._custom_file))
         for height, action in self._size_actions.items():
             action.setChecked(height == self._character_height)
         self._pause_action.setText("Resume Movement" if self._movement_paused else "Pause Movement")

@@ -52,32 +52,35 @@ def _visible_bounds(image: QImage) -> QRect:
 
 
 class SpriteAnimation:
-    def __init__(self, root: Path | None, fallback: QPixmap, max_size: QSize, motion_fps: int | None = None) -> None:
+    def __init__(self, root: Path | None, fallback: QPixmap, max_size: QSize, motion_fps: int | None = None,
+                 fallback_root: Path | None = None) -> None:
         self.motion_fps = motion_fps
         self.frames: dict[str, list[QPixmap]] = {"static": [fallback]}
         for name in ("walk", "idle", "blink", "happy", "surprised", "shy", "dance"):
-            frames = []
-            first_image = None
-            distinct = False
-            paths = sorted((root / name).glob("*.png"), key=_frame_order) if root is not None else []
-            for path in paths:
-                image = QImage(str(path), "PNG")
-                if image.isNull():
-                    logging.getLogger(__name__).warning("Skipping unreadable sprite: %s", path)
-                    continue
-                # Remove transparent margins in memory, then anchor all poses at
-                # bottom-center. The source files and their aspect ratios stay intact.
-                bounds = _visible_bounds(image)
-                if not bounds.isEmpty():
-                    image = image.copy(bounds).convertToFormat(QImage.Format.Format_RGBA8888)
-                    if first_image is None:
-                        first_image = image
-                    elif image != first_image:
-                        distinct = True
-                    frames.append(QPixmap.fromImage(image))
-            # Motion needs different poses; repeated copies of one PNG are static.
-            if frames and (name not in ("walk", "dance") or distinct):
-                self.frames[name] = frames
+            for source_root in (root, fallback_root):
+                frames = []
+                first_image = None
+                distinct = False
+                paths = sorted((source_root / name).glob("*.png"), key=_frame_order) if source_root is not None else []
+                for path in paths:
+                    image = QImage(str(path), "PNG")
+                    if image.isNull():
+                        logging.getLogger(__name__).warning("Skipping unreadable sprite: %s", path)
+                        continue
+                    # Remove transparent margins in memory, then anchor all poses at
+                    # bottom-center. The source files and their aspect ratios stay intact.
+                    bounds = _visible_bounds(image)
+                    if not bounds.isEmpty():
+                        image = image.copy(bounds).convertToFormat(QImage.Format.Format_RGBA8888)
+                        if first_image is None:
+                            first_image = image
+                        elif image != first_image:
+                            distinct = True
+                        frames.append(QPixmap.fromImage(image))
+                # Motion needs different poses; repeated copies of one PNG are static.
+                if frames and (name not in ("walk", "dance") or distinct):
+                    self.frames[name] = frames
+                    break
 
         self._random = Random()
         self._blink_remaining = self._random.uniform(*BLINK_SECONDS)

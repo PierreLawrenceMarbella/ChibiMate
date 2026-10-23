@@ -104,12 +104,12 @@ class CharacterPreferences:
         return filename, QPixmap.fromImage(image)
 
     def _pack_key(self, filename: str) -> str:
+        if not filename:
+            return "packs/default-alya"
         # Identical imported PNGs recover their association even from a new path.
         return "packs/" + hashlib.sha256((self.directory / filename).read_bytes()).hexdigest()
 
     def pack_for(self, filename: str) -> tuple[Path | None, int]:
-        if not filename:
-            return None, 8
         try:
             key = self._pack_key(filename)
             name = self.settings.value(key + "/folder", "")
@@ -119,14 +119,14 @@ class CharacterPreferences:
             path = self.directory / "animation-packs" / name
             if path.is_dir():
                 return path, fps if 8 <= fps <= 12 else 8
-            logging.getLogger(__name__).warning("Saved animation pack is missing; using the character PNG.")
+            logging.getLogger(__name__).warning("Saved animation pack is missing; using the character's default appearance.")
         except (OSError, ValueError, TypeError):
-            logging.getLogger(__name__).warning("Saved animation pack is unavailable; using the character PNG.")
+            logging.getLogger(__name__).warning("Saved animation pack is unavailable; using the character's default appearance.")
         return None, 8
 
     def accept_pack(self, filename: str, staged: Path, fps: int) -> None:
-        if not filename or fps not in range(8, 13):
-            raise ValueError("Select a custom character and a speed from 8 to 12 FPS.")
+        if fps not in range(8, 13):
+            raise ValueError("Select a speed from 8 to 12 FPS.")
         key = self._pack_key(filename)
         parent = self.directory / "animation-packs"
         parent.mkdir(parents=True, exist_ok=True)
@@ -145,4 +145,19 @@ class CharacterPreferences:
             self.settings.sync()
             if destination.resolve().parent == parent.resolve() and destination.exists():
                 shutil.rmtree(destination)
+            raise
+
+    def restore_default(self, height: int) -> None:
+        """Restore bundled Alya without deleting any imported pack files."""
+        key = self._pack_key("")
+        previous = {name: self.settings.value(key + "/" + name) for name in ("folder", "fps")}
+        self.settings.remove(key)
+        try:
+            # Flush the character selection and removed override together.
+            self.save("", height)
+        except OSError:
+            for name, value in previous.items():
+                if value is not None:
+                    self.settings.setValue(key + "/" + name, value)
+            self.settings.sync()
             raise

@@ -14,6 +14,7 @@ class PackDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Import Animation Pack")
         self.character = character
+        self.fallback_description = "Missing or insufficient actions use the static PNG/dialogue."
         self.staging = None
         self.player = None
         self.setMinimumWidth(430)
@@ -89,8 +90,8 @@ class PackDialog(QDialog):
         self.select_action(self.actions.currentText())
         missing = [name for name in ACTIONS if name not in available]
         self.status.setText("Available: " + ", ".join(f"{name} ({counts[name]})" for name in available)
-                            + ".\nUnavailable: " + (", ".join(missing) or "none")
-                            + ". Missing or insufficient actions use the static PNG/dialogue."
+                            + ".\nUnavailable in pack: " + (", ".join(missing) or "none")
+                            + ". " + self.fallback_description
                             + " Walking and dancing require two different poses.")
         self.apply.setEnabled(True)
         self.clock.restart()
