@@ -1,6 +1,8 @@
 """Native Qt interaction checks for clicks, bubbles, pause, and cleanup."""
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
@@ -10,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 
 from app.dialogue import BUBBLE_MILLISECONDS
 from app.window import CharacterWindow
+from app.preferences import CharacterPreferences
 
 
 class InteractionTests(unittest.TestCase):
@@ -19,7 +22,8 @@ class InteractionTests(unittest.TestCase):
         cls.app.setQuitOnLastWindowClosed(False)
 
     def setUp(self):
-        self.window = CharacterWindow()
+        self.temp = tempfile.TemporaryDirectory()
+        self.window = CharacterWindow(preferences=CharacterPreferences(Path(self.temp.name)))
         self.window.show()
         self.window._timer.stop()
         self.app.processEvents()
@@ -29,6 +33,7 @@ class InteractionTests(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+        self.temp.cleanup()
 
     def trigger(self, kind='happy'):
         with patch.object(self.window._reaction_random, 'choice', side_effect=[kind, 'Hehe~!']):

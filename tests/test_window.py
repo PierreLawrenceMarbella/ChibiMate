@@ -12,6 +12,7 @@ from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
 
 from app.window import BOB_AMPLITUDE, BOB_PADDING, WALK_SPEED, CharacterWindow
+from app.preferences import CharacterPreferences
 
 
 class CharacterWindowTests(unittest.TestCase):
@@ -21,7 +22,9 @@ class CharacterWindowTests(unittest.TestCase):
         cls.app.setQuitOnLastWindowClosed(False)
 
     def setUp(self):
-        self.window = CharacterWindow()
+        self.temp = tempfile.TemporaryDirectory()
+        self.preferences = CharacterPreferences(Path(self.temp.name))
+        self.window = CharacterWindow(preferences=self.preferences)
         self.window.show()
         self.window._timer.stop()
         self.app.processEvents()
@@ -31,6 +34,7 @@ class CharacterWindowTests(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+        self.temp.cleanup()
 
     def test_idle_bobs_inside_a_stationary_window(self):
         window = self.window
@@ -200,7 +204,7 @@ class CharacterWindowTests(unittest.TestCase):
     def test_missing_image_still_warns_and_animates_placeholder(self):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertLogs('app.window', level='WARNING'):
-                fallback = CharacterWindow(Path(folder) / 'missing.png', Path(folder) / 'frames')
+                fallback = CharacterWindow(Path(folder) / 'missing.png', Path(folder) / 'frames', self.preferences)
             try:
                 self.assertFalse(fallback._character.isNull())
                 fallback._advance(0.02)

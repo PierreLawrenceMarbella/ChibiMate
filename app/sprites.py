@@ -21,12 +21,11 @@ def _frame_order(path: Path) -> list:
 
 
 class SpriteAnimation:
-    def __init__(self, root: Path, fallback: QPixmap, max_size: QSize) -> None:
+    def __init__(self, root: Path | None, fallback: QPixmap, max_size: QSize) -> None:
         self.frames: dict[str, list[QPixmap]] = {"static": [fallback]}
         for name in ("walk", "idle", "blink", "happy", "surprised", "shy"):
             frames = []
-            folder = root / name
-            paths = sorted(folder.glob("*.png"), key=_frame_order)
+            paths = sorted((root / name).glob("*.png"), key=_frame_order) if root is not None else []
             for path in paths:
                 image = QImage(str(path), "PNG")
                 if image.isNull():
@@ -41,11 +40,6 @@ class SpriteAnimation:
             if len(frames) >= (2 if name == "walk" else 1):
                 self.frames[name] = frames
 
-        sizes = [frame.size().scaled(max_size, Qt.AspectRatioMode.KeepAspectRatio)
-                 for frames in self.frames.values() for frame in frames]
-        self.size = QSize(max(size.width() for size in sizes),
-                          max(size.height() for size in sizes))
-        self._max_size = QSize(max_size)
         self._random = Random()
         self._blink_remaining = self._random.uniform(*BLINK_SECONDS)
         self._reaction_frame: tuple[str, int] | None = None
@@ -58,6 +52,17 @@ class SpriteAnimation:
         self._time = 0.0
         self._cache: dict[tuple[str, int], QPixmap] = {}
         self._dpr = 0.0
+        self.set_max_size(max_size)
+
+    def _fitted_size(self, source: QPixmap) -> QSize:
+        size = source.size().scaled(self._max_size, Qt.AspectRatioMode.KeepAspectRatio)
+        return size.expandedTo(QSize(1, 1))
+
+    def set_max_size(self, max_size: QSize) -> None:
+        self._max_size = max_size.expandedTo(QSize(1, 1))
+        sizes = [self._fitted_size(frame) for frames in self.frames.values() for frame in frames]
+        self.size = QSize(max(size.width() for size in sizes), max(size.height() for size in sizes))
+        self._cache.clear()
 
     def _select(self, name: str) -> None:
         if self.state != name:
@@ -131,7 +136,7 @@ class SpriteAnimation:
         key = self.frame_key
         if key not in self._cache:
             source = self.frames[key[0]][key[1]]
-            fitted = source.size().scaled(self._max_size, Qt.AspectRatioMode.KeepAspectRatio)
+            fitted = self._fitted_size(source)
             # Cache the full aligned canvas at the current monitor's resolution.
             canvas = QPixmap(round(self.size.width() * dpr), round(self.size.height() * dpr))
             canvas.fill(Qt.GlobalColor.transparent)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QPoint, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
+    QActionGroup,
     QCloseEvent,
     QContextMenuEvent,
     QMouseEvent,
@@ -14,7 +15,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPixmap,
 )
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QWidget
 
 from app.character import create_placeholder
 from app.bubble import SpeechBubble
@@ -22,6 +23,7 @@ from app.dialogue import (
     BUBBLE_MILLISECONDS, CLICK_REACTIONS, DIALOGUE, RANDOM_REACTION_SECONDS, REACTION_SECONDS,
 )
 from app.sprites import SPRITE_PATH, SpriteAnimation
+from app.preferences import CHARACTER_HEIGHTS, CharacterPreferences
 
 
 CHARACTER_PATH = Path(__file__).resolve().parent.parent / "assets" / "alya.png"
@@ -36,7 +38,8 @@ BOB_PADDING = math.ceil(BOB_AMPLITUDE)
 
 class CharacterWindow(QWidget):
     def __init__(self, character_path: Path = CHARACTER_PATH,
-                 sprite_path: Path = SPRITE_PATH) -> None:
+                 sprite_path: Path = SPRITE_PATH,
+                 preferences: CharacterPreferences | None = None) -> None:
         super().__init__()
         self.setWindowTitle("ChibiMate")
         self.setWindowFlags(
@@ -53,17 +56,17 @@ class CharacterWindow(QWidget):
         self._reaction_remaining = 0.0
         self._reaction_random = random.Random()
         self._random_reaction_remaining = self._reaction_random.uniform(*RANDOM_REACTION_SECONDS)
+        self._dialog_open = False
+        self._preferences = preferences if preferences is not None else CharacterPreferences()
+        self._default_character_path = character_path
+        self._default_sprite_path = sprite_path
+        self._character_height = self._preferences.height
+        self._custom_file, saved_character = self._preferences.load_character()
 
-        self._character = QPixmap()
-        if character_path.is_file():
-            self._character.load(str(character_path), "PNG")
-        if self._character.isNull():
-            logging.getLogger(__name__).warning(
-                "Character PNG is missing or unreadable: %s. Using the built-in placeholder.",
-                character_path,
-            )
-            self._character = create_placeholder()
-        self._sprites = SpriteAnimation(sprite_path, self._character, MAX_CHARACTER_SIZE)
+        self._character = saved_character if saved_character is not None else self._load_default_character()
+        self._sprites = SpriteAnimation(
+            None if self._custom_file else sprite_path, self._character, self._display_limit(),
+        )
         self._character_size = self._sprites.size
         # Reserve transparent space so bobbing never crops the head or feet.
         self.setFixedSize(
@@ -73,6 +76,20 @@ class CharacterWindow(QWidget):
 
         self._bubble = SpeechBubble(self)
         self._menu = QMenu(self)
+        self._menu.addAction("Change Character", self.change_character)
+        self._size_menu = self._menu.addMenu("Character Size")
+        self._size_group = QActionGroup(self)
+        self._size_group.setExclusive(True)
+        self._size_actions = {}
+        for name, height in CHARACTER_HEIGHTS.items():
+            action = self._size_menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(height == self._character_height)
+            action.triggered.connect(lambda checked=False, height=height: self.set_character_size(height))
+            self._size_group.addAction(action)
+            self._size_actions[height] = action
+        self._menu.addAction("Restore Default Alya", self.restore_default)
+        self._menu.addSeparator()
         self._pause_action = self._menu.addAction("Pause Movement", self._toggle_movement)
         self._reaction_action = self._menu.addAction(
             "Trigger Random Reaction", lambda: self.trigger_random_reaction(),
@@ -92,6 +109,100 @@ class CharacterWindow(QWidget):
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+
+    def _load_default_character(self) -> QPixmap:
+        character = QPixmap()
+        if self._default_character_path.is_file():
+            character.load(str(self._default_character_path), "PNG")
+        if character.isNull():
+            logging.getLogger(__name__).warning(
+                "Character PNG is missing or unreadable: %s. Using the built-in placeholder.",
+                self._default_character_path,
+            )
+            character = create_placeholder()
+        return character
+
+    def _display_limit(self) -> QSize:
+        area = self._available_area()
+        width = round(self._character_height * MAX_CHARACTER_SIZE.width() / MAX_CHARACTER_SIZE.height())
+        height = self._character_height
+        if area is not None:
+            width = min(width, area.width())
+            height = min(height, max(1, area.height() - 2 * BOB_PADDING))
+        return QSize(width, height)
+
+    def _resize_character(self) -> None:
+        # Keep the feet in place, then clamp the entire window onto the monitor.
+        anchor = QPoint(self.x() + self.width() // 2, self.y() + self.height())
+        self._sprites.set_max_size(self._display_limit())
+        self._character_size = self._sprites.size
+        self.setFixedSize(self._character_size.width(), self._character_size.height() + 2 * BOB_PADDING)
+        self.move(anchor.x() - self.width() // 2, anchor.y() - self.height())
+        area = self._keep_on_screen()
+        self._walk_x = float(self.x())
+        if self._bubble.isVisible() and area is not None:
+            self._bubble.place_near(self.geometry(), area)
+        self.update()
+
+    def _apply_character(self, character: QPixmap, filename: str) -> None:
+        self._cancel_reaction()
+        self._drag_offset = self._press_position = None
+        self._dragging = False
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._character = character
+        self._custom_file = filename
+        self._sprites = SpriteAnimation(
+            None if filename else self._default_sprite_path, character, self._display_limit(),
+        )
+        self._bob_offset = 0.0
+        self._resize_character()
+        self._start_idle()
+        self._clock.restart()
+
+    def _show_character_error(self, error: Exception) -> None:
+        was_active = self._timer.isActive()
+        self._timer.stop()
+        try:
+            QMessageBox.warning(self, "Character Preferences", str(error))
+        finally:
+            self._clock.restart()
+            if was_active and self.isVisible():
+                self._timer.start()
+
+    def change_character(self) -> None:
+        was_active = self._timer.isActive()
+        self._timer.stop()
+        self._dialog_open = True
+        try:
+            selected, _ = QFileDialog.getOpenFileName(self, "Change Character", "", "PNG images (*.png)")
+            if selected:
+                filename, character = self._preferences.import_character(Path(selected), self._character_height)
+                self._apply_character(character, filename)
+        except (OSError, ValueError) as error:
+            self._show_character_error(error)
+        finally:
+            self._dialog_open = False
+            self._clock.restart()
+            if was_active and self.isVisible():
+                self._timer.start()
+
+    def set_character_size(self, height: int) -> None:
+        if height not in CHARACTER_HEIGHTS.values():
+            return
+        try:
+            self._preferences.save(self._custom_file, height)
+            self._character_height = height
+            self._resize_character()
+        except OSError as error:
+            self._show_character_error(error)
+        self._update_menu()
+
+    def restore_default(self) -> None:
+        try:
+            self._preferences.save("", self._character_height)
+            self._apply_character(self._load_default_character(), "")
+        except OSError as error:
+            self._show_character_error(error)
 
     def _position_initially(self) -> None:
         screen = QApplication.primaryScreen()
@@ -156,6 +267,8 @@ class CharacterWindow(QWidget):
         self._clock.restart()
 
     def _update_menu(self) -> None:
+        for height, action in self._size_actions.items():
+            action.setChecked(height == self._character_height)
         self._pause_action.setText("Resume Movement" if self._movement_paused else "Pause Movement")
         self._reaction_action.setEnabled(self._reaction_remaining <= 0 and not self._bubble.isVisible())
 
@@ -165,7 +278,7 @@ class CharacterWindow(QWidget):
         self._update_menu()
 
     def trigger_random_reaction(self, automatic: bool = False) -> bool:
-        if (self._drag_offset is not None or self._menu.isVisible()
+        if (self._dialog_open or self._drag_offset is not None or self._menu.isVisible()
                 or self._reaction_remaining > 0 or self._bubble.isVisible()):
             return False
         if automatic and self._walking:
@@ -192,7 +305,7 @@ class CharacterWindow(QWidget):
         # Elapsed time keeps speed consistent; cap long stalls to avoid jumps
         # after suspend, a debugger pause, or a busy desktop.
         elapsed = min(self._clock.restart() / 1000.0, 0.05)
-        if self._drag_offset is not None or self._menu.isVisible() or not self.isVisible():
+        if self._dialog_open or self._drag_offset is not None or self._menu.isVisible() or not self.isVisible():
             return
         self._advance(elapsed)
 
