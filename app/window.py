@@ -22,7 +22,7 @@ from app.bubble import SpeechBubble
 from app.dialogue import (
     BUBBLE_MILLISECONDS, CLICK_REACTIONS, DIALOGUE, RANDOM_REACTION_SECONDS, REACTION_SECONDS,
 )
-from app.sprites import SPRITE_PATH, SpriteAnimation
+from app.sprites import AnimationState, DANCE_SECONDS, SPRITE_PATH, SpriteAnimation
 from app.preferences import CHARACTER_HEIGHTS, CharacterPreferences
 
 
@@ -94,6 +94,7 @@ class CharacterWindow(QWidget):
         self._reaction_action = self._menu.addAction(
             "Trigger Random Reaction", lambda: self.trigger_random_reaction(),
         )
+        self._dance_action = self._menu.addAction("Dance", lambda: self.start_dance())
         self._menu.addSeparator()
         self._menu.addAction("Exit ChibiMate", self.close)
         self._menu.aboutToShow.connect(self._update_menu)
@@ -109,6 +110,7 @@ class CharacterWindow(QWidget):
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+        self._update_menu()
 
     def _load_default_character(self) -> QPixmap:
         character = QPixmap()
@@ -158,6 +160,7 @@ class CharacterWindow(QWidget):
         self._resize_character()
         self._start_idle()
         self._clock.restart()
+        self._update_menu()
 
     def _show_character_error(self, error: Exception) -> None:
         was_active = self._timer.isActive()
@@ -270,7 +273,27 @@ class CharacterWindow(QWidget):
         for height, action in self._size_actions.items():
             action.setChecked(height == self._character_height)
         self._pause_action.setText("Resume Movement" if self._movement_paused else "Pause Movement")
-        self._reaction_action.setEnabled(self._reaction_remaining <= 0 and not self._bubble.isVisible())
+        busy = self.animation_state in (AnimationState.REACTING, AnimationState.DANCING, AnimationState.DRAGGING)
+        available = not busy and not self._bubble.isVisible() and not self._dialog_open
+        self._reaction_action.setEnabled(available)
+        self._dance_action.setEnabled(available and self._sprites.can_dance)
+
+    @property
+    def animation_state(self) -> AnimationState:
+        # Mouse ownership has priority over all automatic animation states.
+        if self._dragging:
+            return AnimationState.DRAGGING
+        return self._sprites.animation_state
+
+    def start_dance(self, duration: float = DANCE_SECONDS) -> bool:
+        if (self._dialog_open or self._drag_offset is not None or self._menu.isVisible()
+                or self._reaction_remaining > 0 or self._bubble.isVisible()):
+            return False
+        if not self._sprites.begin_dance(duration):
+            return False
+        self._clock.restart()
+        self.update()
+        return True
 
     def _toggle_movement(self) -> None:
         self._movement_paused = not self._movement_paused
@@ -279,6 +302,7 @@ class CharacterWindow(QWidget):
 
     def trigger_random_reaction(self, automatic: bool = False) -> bool:
         if (self._dialog_open or self._drag_offset is not None or self._menu.isVisible()
+                or self.animation_state in (AnimationState.REACTING, AnimationState.DANCING)
                 or self._reaction_remaining > 0 or self._bubble.isVisible()):
             return False
         if automatic and self._walking:
@@ -289,8 +313,10 @@ class CharacterWindow(QWidget):
         names = tuple(DIALOGUE) if automatic else CLICK_REACTIONS
         name = self._reaction_random.choice(names)
         message = self._reaction_random.choice(DIALOGUE[name])
-        self._reaction_remaining = self._reaction_random.uniform(*REACTION_SECONDS)
-        self._sprites.begin_reaction(name, self._reaction_remaining)
+        duration = self._reaction_random.uniform(*REACTION_SECONDS)
+        if not self._sprites.begin_reaction(name, duration):
+            return False
+        self._reaction_remaining = duration
         self._random_reaction_remaining = self._reaction_random.uniform(*RANDOM_REACTION_SECONDS)
         self._bubble.show_message(message, self.geometry(), area, BUBBLE_MILLISECONDS)
         self.update()
@@ -310,9 +336,16 @@ class CharacterWindow(QWidget):
         self._advance(elapsed)
 
     def _advance(self, elapsed: float) -> None:
+        if self._drag_offset is not None:
+            return
         # Rechecking geometry also handles taskbar changes and removed monitors.
         area = self._keep_on_screen()
-        if self._reaction_remaining > 0:
+        if self.animation_state == AnimationState.DANCING:
+            self._sprites.advance(elapsed)
+            self._bob_offset *= math.exp(-12 * elapsed)
+            self.update()
+            return
+        if self.animation_state == AnimationState.REACTING or self._reaction_remaining > 0:
             if self._bubble.isVisible() and area is not None:
                 self._bubble.place_near(self.geometry(), area)
             self._sprites.advance(elapsed)
@@ -356,7 +389,7 @@ class CharacterWindow(QWidget):
         self.update()
 
     def show_expression(self, name: str, duration: float = 1.2) -> bool:
-        if self._drag_offset is not None or self._menu.isVisible():
+        if self._dialog_open or self._drag_offset is not None or self._menu.isVisible():
             return False
         shown = self._sprites.show_expression(name, duration)
         if shown:
@@ -394,6 +427,9 @@ class CharacterWindow(QWidget):
             if not self._dragging and (position - self._press_position).manhattanLength() >= QApplication.startDragDistance():
                 self._dragging = True
                 self._cancel_reaction()
+                self._sprites.end_dance()
+                self._start_idle()
+                self.update()
             if self._dragging:
                 self.move(position - self._drag_offset)
             event.accept()
@@ -429,5 +465,7 @@ class CharacterWindow(QWidget):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._timer.stop()
+        self._cancel_reaction()
+        self._sprites.end_dance()
         self._bubble.close()
         super().closeEvent(event)

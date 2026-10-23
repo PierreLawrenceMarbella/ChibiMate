@@ -6,13 +6,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
-from PySide6.QtGui import QContextMenuEvent, QMouseEvent
+from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QMouseEvent, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from app.dialogue import BUBBLE_MILLISECONDS
 from app.window import CharacterWindow
 from app.preferences import CharacterPreferences
+from app.sprites import AnimationState, DANCE_SECONDS
 
 
 class InteractionTests(unittest.TestCase):
@@ -51,6 +52,147 @@ class InteractionTests(unittest.TestCase):
         self.open_menu()
         QTest.mouseClick(self.window._menu, Qt.MouseButton.LeftButton,
                          pos=self.window._menu.actionGeometry(action).center())
+
+    def enable_dance(self):
+        # Colored test rectangles exercise playback without adding character art.
+        root = Path(self.temp.name) / 'sprites'
+        folder = root / 'dance'
+        folder.mkdir(parents=True)
+        for number, color in enumerate(('red', 'blue'), 1):
+            image = QImage(60, 100, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(image)
+            painter.fillRect(10, 10, 40, 80, QColor(color))
+            painter.end()
+            self.assertTrue(image.save(str(folder / f'dance_{number:02d}.png')))
+        self.window._default_sprite_path = root
+        self.window.restore_default()
+
+    def test_dance_menu_requires_assets_and_restores_suspended_walk(self):
+        window = self.window
+        self.open_menu()
+        self.assertFalse(window._dance_action.isEnabled())
+        window._menu.close()
+        self.assertFalse(window.start_dance())
+        self.enable_dance()
+        window._start_walk()
+        before = window.pos()
+        remaining = window._remaining
+        random_remaining = window._random_reaction_remaining
+        self.click_menu_action(window._dance_action)
+        self.assertEqual(window.animation_state, AnimationState.DANCING)
+        self.assertEqual(window._sprites.frame_key, ('dance', 0))
+        window._advance(0.125)
+        self.assertEqual(window._sprites.frame_key, ('dance', 1))
+        self.assertEqual(window.pos(), before)
+        self.assertEqual(window._remaining, remaining)
+        self.assertEqual(window._random_reaction_remaining, random_remaining)
+        self.assertFalse(window.trigger_random_reaction())
+        self.open_menu()
+        self.assertFalse(window._reaction_action.isEnabled())
+        self.assertFalse(window._dance_action.isEnabled())
+        snapshot = (window.pos(), window._sprites._dance_remaining)
+        window._timer.start()
+        QTest.qWait(80)
+        self.assertEqual((window.pos(), window._sprites._dance_remaining), snapshot)
+        window._timer.stop()
+        window._menu.close()
+        window._advance(DANCE_SECONDS)
+        self.assertEqual(window.animation_state, AnimationState.WALKING)
+        window._advance(0.1)
+        self.assertNotEqual(window.pos(), before)
+
+    def test_pause_and_drag_during_dance_preserve_user_control(self):
+        self.enable_dance()
+        window = self.window
+        window._start_walk()
+        self.assertTrue(window.start_dance())
+        self.click_menu_action(window._pause_action)
+        self.assertTrue(window._movement_paused)
+        self.assertEqual(window.animation_state, AnimationState.DANCING)
+        window._advance(DANCE_SECONDS)
+        self.assertEqual(window.animation_state, AnimationState.IDLE)
+        self.assertTrue(window.start_dance())
+        local = QPoint(30, 50)
+        start = window.mapToGlobal(local)
+        QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=local)
+        delta = QPoint(-40, -20)
+        self.app.sendEvent(window, QMouseEvent(
+            QEvent.Type.MouseMove, QPointF(local + delta), QPointF(start + delta),
+            Qt.MouseButton.NoButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+        ))
+        self.assertEqual(window.animation_state, AnimationState.DRAGGING)
+        self.assertEqual(window._sprites._dance_remaining, 0)
+        before = window.pos()
+        window._advance(0.5)
+        self.assertEqual(window.pos(), before)
+        self.assertFalse(window.start_dance())
+        QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=local)
+        self.assertEqual(window.animation_state, AnimationState.IDLE)
+        self.assertTrue(window._movement_paused)
+        self.assertFalse(window._bubble.isVisible())
+        self.assertEqual(window._reaction_remaining, 0)
+
+    def test_character_switch_and_resize_during_dance_keep_preferences_and_identity(self):
+        self.enable_dance()
+        window = self.window
+        self.assertTrue(window.start_dance())
+        window.set_character_size(200)
+        self.assertEqual(window.animation_state, AnimationState.DANCING)
+        self.assertEqual(window._character_size.height(), 200)
+        self.assertTrue(window._available_area().contains(window.geometry()))
+        source = Path(self.temp.name) / 'custom.png'
+        image = QImage(60, 100, QImage.Format.Format_ARGB32)
+        image.fill(QColor('green'))
+        self.assertTrue(image.save(str(source)))
+        with patch('app.window.QFileDialog.getOpenFileName', return_value=(str(source), '')):
+            window.change_character()
+        self.assertEqual(window.animation_state, AnimationState.IDLE)
+        self.assertEqual(set(window._sprites.frames), {'static'})
+        self.assertFalse(window._dance_action.isEnabled())
+        self.assertFalse(window.start_dance())
+        self.assertEqual(window._preferences.height, 200)
+        self.assertEqual(window._preferences.load_character()[0], window._custom_file)
+        window.restore_default()
+        self.assertEqual(window._character_height, 200)
+        self.assertTrue(window._dance_action.isEnabled())
+        self.assertEqual(window._preferences.load_character(), ('', None))
+
+    def test_exit_during_dance_stops_existing_timers(self):
+        self.enable_dance()
+        self.assertTrue(self.window.start_dance())
+        self.window._timer.start()
+        self.click_menu_action(self.window._menu.actions()[-1])
+        self.assertFalse(self.window.isVisible())
+        self.assertFalse(self.window._timer.isActive())
+        self.assertFalse(self.window._bubble._timer.isActive())
+
+    def test_happy_and_surprised_click_poses_expire_into_idle(self):
+        window = self.window
+        for name in ('happy', 'surprised'):
+            with patch.object(window._reaction_random, 'choice', side_effect=[name, 'Hello!']):
+                QTest.mouseClick(window, Qt.MouseButton.LeftButton, pos=QPoint(50, 75))
+            self.assertEqual(window.animation_state, AnimationState.REACTING)
+            self.assertEqual(window._sprites.frame_key, (name, 0))
+            self.assertTrue(1 <= window._reaction_remaining <= 2)
+            self.assertFalse(window.start_dance())
+            window._advance(2.1)
+            self.assertEqual(window.animation_state, AnimationState.IDLE)
+            self.assertEqual(window._sprites.frame_key, ('idle', 0))
+            window._bubble.dismiss()
+
+    def test_temporary_expression_defers_automatic_walk_until_finished(self):
+        window = self.window
+        window._remaining = 0.01
+        self.assertTrue(window.show_expression('happy', 1.2))
+        window._advance(0.5)
+        self.assertEqual(window.animation_state, AnimationState.REACTING)
+        self.assertFalse(window._walking)
+        self.assertFalse(window.trigger_random_reaction())
+        window._advance(0.8)
+        self.assertEqual(window.animation_state, AnimationState.IDLE)
+        window._advance(0.02)
+        self.assertEqual(window.animation_state, AnimationState.WALKING)
 
     def test_click_reacts_once_then_resumes_walking(self):
         window = self.window

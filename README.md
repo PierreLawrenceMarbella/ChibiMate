@@ -1,4 +1,4 @@
-# ChibiMate — Phase 4
+# ChibiMate — Phase 5
 
 A small, transparent, always-on-top desktop chibi for Windows 10/11.
 Requires Python 3.11 or newer. PySide6 is the only dependency.
@@ -20,7 +20,7 @@ With an activated environment, run `python main.py`.
 - Hold the left mouse button on the character to drag it. Automatic behavior
   pauses during dragging and menus; dragging ends with a fresh idle period.
   Releasing outside the desktop brings her fully onto the nearest screen.
-- Left-click for a random happy, surprised, or shy reaction lasting 1.5–2.5
+- Left-click for a random happy, surprised, or shy reaction lasting 1.5–2
   seconds, with a speech bubble for 3 seconds. Dragging never counts as a click.
   Missing reaction sprites keep the current image and show dialogue instead.
 - Right-click for **Change Character** to select a PNG, **Character Size** for
@@ -32,9 +32,14 @@ With an activated environment, run `python main.py`.
   static image during movement and reactions; restoring Alya restores her sprites.
 - The menu also offers **Pause Movement / Resume Movement**, **Trigger Random
   Reaction**, and **Exit ChibiMate**. Pausing still allows dragging and reactions.
+- **Dance** is enabled only when `assets/characters/alya/dance/` contains at least
+  two different readable poses (`dance_01.png`, `dance_02.png`, …). It loops for
+  6 seconds at 8 fps, suspends walking, then resumes the previous behavior.
+  Dragging interrupts dancing; reactions and dances never overlap.
+  No dance or shy frames are currently supplied. The supplied blink is a wink pose.
 - Sprite PNGs load from `assets/characters/alya/{walk,idle,blink,happy,surprised}/`.
   Numbered names sort naturally (`walk_1.png`, `walk_2.png`, …). Walking loops
-  at 8 fps and needs at least two valid frames; idle loops at 2 fps or holds
+  at 8 fps and needs at least two distinct valid poses; idle loops at 2 fps or holds
   a single pose with bobbing. Blink and expression folders can hold one pose.
   The supplied walk sequence is `walk_01.png` through `walk_08.png`, making
   one complete loop per second.
@@ -54,8 +59,9 @@ Adjust `WALK_SPEED` (logical pixels/second), `IDLE_SECONDS`, `WALK_SECONDS`,
 and the bob settings in `app/window.py` to tune the behavior. A small transparent
 margin keeps the idle bob inside the window at every size.
 
-Edit dialogue and reaction timing in `app/dialogue.py`; sprite rates and blink
-timing are in `app/sprites.py`. Phase 4 adds local character personalization;
-no AI, voice features, or additional dependencies.
+Edit dialogue and reaction timing in `app/dialogue.py`; `FRAME_RATES`,
+`BLINK_SECONDS`, and `DANCE_SECONDS` are in `app/sprites.py`. Restart or choose
+**Restore Default Alya** after adding sprite files. Phase 5 uses local PNG frames
+without AI, generated artwork, or additional dependencies.
 
 Checks: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
