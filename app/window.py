@@ -57,6 +57,8 @@ class CharacterWindow(QWidget):
         self._reaction_random = random.Random()
         self._random_reaction_remaining = self._reaction_random.uniform(*RANDOM_REACTION_SECONDS)
         self._dialog_open = False
+        self._generator = None
+        self._exit_after_generator = False
         self._preferences = preferences if preferences is not None else CharacterPreferences()
         self._default_character_path = character_path
         self._default_sprite_path = sprite_path
@@ -89,6 +91,7 @@ class CharacterWindow(QWidget):
             self._size_group.addAction(action)
             self._size_actions[height] = action
         self._menu.addAction("Restore Default Alya", self.restore_default)
+        self._menu.addAction("AI Chibi Generator", self.open_generator)
         self._menu.addSeparator()
         self._pause_action = self._menu.addAction("Pause Movement", self._toggle_movement)
         self._reaction_action = self._menu.addAction(
@@ -206,6 +209,32 @@ class CharacterWindow(QWidget):
             self._apply_character(self._load_default_character(), "")
         except OSError as error:
             self._show_character_error(error)
+
+    def open_generator(self) -> None:
+        if self._generator is None:
+            from app.generator_dialog import GeneratorDialog
+            self._generator = GeneratorDialog(self)
+            self._generator.use_character.connect(self._accept_generated)
+            self._generator.finished.connect(self._generator_closed)
+        self._generator.show()
+        self._generator.raise_()
+        self._generator.activateWindow()
+
+    def _accept_generated(self, data: bytes) -> None:
+        try:
+            filename, character = self._preferences.accept_generated(data, self._character_height)
+            self._apply_character(character, filename)
+            self._generator.accept()
+        except (OSError, ValueError):
+            self._generator.status.setText("Could not save the generated character. Check available disk space and permissions.")
+
+    def _generator_closed(self) -> None:
+        if self._generator is None:
+            return
+        self._generator.deleteLater()
+        self._generator = None
+        if self._exit_after_generator:
+            self.close()
 
     def _position_initially(self) -> None:
         screen = QApplication.primaryScreen()
@@ -464,6 +493,13 @@ class CharacterWindow(QWidget):
         event.accept()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._generator is not None:
+            if self._generator.worker is not None:
+                self._exit_after_generator = True
+                event.ignore()
+                self._generator.reject()
+                return
+            self._generator.reject()
         self._timer.stop()
         self._cancel_reaction()
         self._sprites.end_dance()

@@ -1,7 +1,7 @@
-# ChibiMate — Phase 5
+# ChibiMate — Phase 6
 
 A small, transparent, always-on-top desktop chibi for Windows 10/11.
-Requires Python 3.11 or newer. PySide6 is the only dependency.
+Requires Python 3.11 or newer. Dependencies are PySide6 and the official OpenAI Python SDK.
 
 ## Install and run (PowerShell)
 
@@ -61,7 +61,27 @@ margin keeps the idle bob inside the window at every size.
 
 Edit dialogue and reaction timing in `app/dialogue.py`; `FRAME_RATES`,
 `BLINK_SECONDS`, and `DANCE_SECONDS` are in `app/sprites.py`. Restart or choose
-**Restore Default Alya** after adding sprite files. Phase 5 uses local PNG frames
-without AI, generated artwork, or additional dependencies.
+**Restore Default Alya** after adding sprite files. Phase 6 uses local PNG frames
+with optional AI generation of static custom characters.
 
 Checks: `.\.venv\Scripts\python.exe -m unittest discover -s tests -v`
+
+## AI Chibi Generator
+
+Install updated dependencies with `python -m pip install -r requirements.txt`.
+Set `OPENAI_API_KEY` in your environment before launching (PowerShell:
+`$env:OPENAI_API_KEY = "your-key"`). Right-click **AI Chibi Generator**, choose a
+PNG/JPG/JPEG/WebP reference, optionally enter details, and click **Generate Chibi**.
+This sends the image and prompt to OpenAI and may incur charges. No requests run
+at startup. Canceling stops the local request but may not prevent server charges.
+
+The default is `gpt-image-2.5-flare`, low quality, one 1024x1024 transparent PNG.
+Override the model with `CHIBIMATE_IMAGE_MODEL` using a model supporting these
+[image edit options](https://developers.openai.com/api/reference/python/resources/images/methods/edit).
+Edit `DEFAULT_PROMPT` in `app/generation.py` to adjust the base instructions.
+Model access depends on your API account; resemblance and transparency can vary.
+
+Preview results before choosing **Use as ChibiMate** or **Save PNG**. Accepted
+characters are saved in `%LOCALAPPDATA%\ChibiMate\generated-characters`, retain
+your size preference, and use static movement and dialogue. Rejected previews
+stay out of persistent storage. Reference files and Alya's sprites are unchanged.

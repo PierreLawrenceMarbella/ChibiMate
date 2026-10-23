@@ -44,7 +44,7 @@ class CharacterPreferences:
             return "", None
         try:
             # Settings may only refer to copies inside this app's own directory.
-            if not isinstance(filename, str) or not re.fullmatch(r"character-[0-9a-f]{32}\.png", filename):
+            if not isinstance(filename, str) or not re.fullmatch(r"(?:generated-characters/)?character-[0-9a-f]{32}\.png", filename):
                 raise ValueError("Invalid saved character filename")
             _, pixmap = read_png(self.directory / filename)
             return filename, pixmap
@@ -78,3 +78,25 @@ class CharacterPreferences:
             raise OSError("Could not finish saving the imported character image.")
         self.save(filename, height)
         return filename, pixmap
+
+    def accept_generated(self, data: bytes, height: int) -> tuple[str, QPixmap]:
+        image = QImage.fromData(data, "PNG")
+        if image.isNull():
+            raise ValueError("The generated image is not a readable PNG.")
+        folder = self.directory / "generated-characters"
+        folder.mkdir(parents=True, exist_ok=True)
+        filename = f"generated-characters/character-{uuid4().hex}.png"
+        destination = QSaveFile(str(self.directory / filename))
+        if not destination.open(QIODevice.OpenModeFlag.WriteOnly):
+            raise OSError("Could not save the generated character.")
+        if destination.write(data) != len(data):
+            destination.cancelWriting()
+            raise OSError("Could not save the generated character.")
+        if not destination.commit():
+            raise OSError("Could not finish saving the generated character.")
+        try:
+            self.save(filename, height)
+        except OSError:
+            (self.directory / filename).unlink(missing_ok=True)
+            raise
+        return filename, QPixmap.fromImage(image)
