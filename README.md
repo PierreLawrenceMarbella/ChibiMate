@@ -25,6 +25,8 @@ With an activated environment, run `python main.py`.
   Numbered names sort naturally (`walk_1.png`, `walk_2.png`, …). Walking loops
   at 8 fps and needs at least two valid frames; idle loops at 2 fps or holds
   a single pose with bobbing. Blink and expression folders can hold one pose.
+  The supplied walk sequence is `walk_01.png` through `walk_08.png`, making
+  one complete loop per second.
 - During idle, blink frames appear every 3–6 seconds; happy/surprised poses
   occasionally appear for 1.2 seconds. Walking takes priority over expressions.
 - Frames are centered at the feet on a fixed transparent canvas, fit within
