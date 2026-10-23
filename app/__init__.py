@@ -1,0 +1,1 @@
+"""ChibiMate desktop application."""
