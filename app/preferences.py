@@ -9,9 +9,11 @@ from uuid import uuid4
 
 from PySide6.QtCore import QIODevice, QSaveFile, QSettings, QStandardPaths
 from PySide6.QtGui import QImage, QPixmap
+from app.behavior import FREQUENCIES
 
 
 CHARACTER_HEIGHTS = {"Small": 100, "Medium": 150, "Large": 200}
+MIN_HEIGHT, MAX_HEIGHT = 75, 300
 
 
 def read_png(path: Path) -> tuple[bytes, QPixmap]:
@@ -38,7 +40,52 @@ class CharacterPreferences:
             height = int(self.settings.value("height", 150))
         except (TypeError, ValueError):
             return 150
-        return height if height in CHARACTER_HEIGHTS.values() else 150
+        return height if MIN_HEIGHT <= height <= MAX_HEIGHT else 150
+
+    @property
+    def display_options(self) -> tuple[int, bool, bool]:
+        try:
+            opacity = max(20, min(100, int(self.settings.value("opacity", 100))))
+        except (TypeError, ValueError):
+            opacity = 100
+        top = str(self.settings.value("always_on_top", "true")).lower() == "true"
+        follow = str(self.settings.value("follow_cursor", "false")).lower() == "true"
+        return opacity, top, follow
+
+    def save_display_options(self, opacity: int, top: bool, follow: bool) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        for name, value in (("opacity", opacity), ("always_on_top", top), ("follow_cursor", follow)):
+            self.settings.setValue(name, value)
+        self.settings.sync()
+        if self.settings.status() != QSettings.Status.NoError:
+            raise OSError("Could not save display preferences.")
+
+    @property
+    def behavior_options(self) -> tuple[bool, str, bool]:
+        enabled = str(self.settings.value("behavior/enabled", "true")).lower() != "false"
+        frequency = self.settings.value("behavior/frequency", "Normal")
+        if not isinstance(frequency, str) or frequency not in FREQUENCIES:
+            frequency = "Normal"
+        paused = str(self.settings.value("behavior/paused", "false")).lower() == "true"
+        return enabled, frequency, paused
+
+    def save_behavior_options(self, enabled: bool, frequency: str, paused: bool) -> None:
+        if frequency not in FREQUENCIES:
+            raise ValueError("Choose Low, Normal, or High behavior frequency.")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        values = {"enabled": enabled, "frequency": frequency, "paused": paused}
+        previous = {key: self.settings.value("behavior/" + key) for key in values}
+        for key, value in values.items():
+            self.settings.setValue("behavior/" + key, value)
+        self.settings.sync()
+        if self.settings.status() != QSettings.Status.NoError:
+            for key, value in previous.items():
+                if value is None:
+                    self.settings.remove("behavior/" + key)
+                else:
+                    self.settings.setValue("behavior/" + key, value)
+            self.settings.sync()
+            raise OSError("Could not save behavior preferences.")
 
     def load_character(self) -> tuple[str, QPixmap | None]:
         filename = self.settings.value("character", "")

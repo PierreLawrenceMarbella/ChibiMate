@@ -8,8 +8,8 @@ from pathlib import Path
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QImageReader
 from app.sprites import _visible_bounds
+from app.actions import ACTIONS, ALIASES, normalize_action
 
-ACTIONS = ("idle", "walk", "blink", "happy", "surprised", "shy", "dance")
 MAX_BYTES = 100 * 1024 * 1024
 MAX_FILE = 12 * 1024 * 1024
 MAX_PIXELS = 24 * 1024 * 1024
@@ -71,11 +71,11 @@ def validate_pack(source: Path, destination: Path):
             names.add(folded)
             if item is None or not name.lower().endswith(".png"):
                 continue
-            if len(parts) in (2, 3) and parts[-2].lower() in ACTIONS:
+            if len(parts) in (2, 3) and parts[-2].lower() in ALIASES:
                 if size > MAX_FILE:
                     raise ValueError("A PNG exceeds the 12 MB frame limit.")
                 roots.add(tuple(parts[:-2]))
-                candidates.append((parts[-2].lower(), parts[-1], item))
+                candidates.append((normalize_action(parts[-2]), parts[-1], item))
         if not candidates:
             raise ValueError("No PNG frames found. Choose a pack containing idle/, walk/, or other action folders.")
         if len(roots) != 1:

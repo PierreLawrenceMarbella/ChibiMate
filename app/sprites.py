@@ -9,10 +9,11 @@ from random import Random
 
 from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QImage, QPainter, QPixmap
+from app.actions import ACTION_FOLDERS, ACTION_SECONDS, normalize_action
 
 
 SPRITE_PATH = Path(__file__).resolve().parent.parent / "assets" / "characters" / "alya"
-FRAME_RATES = {"walk": 8, "idle": 2, "dance": 8}
+FRAME_RATES = {"walk": 8, "running": 12, "idle": 2, "dance": 8, "sleeping": 2}
 BLINK_SECONDS = (3.0, 6.0)
 DANCE_SECONDS = 6.0
 
@@ -24,6 +25,21 @@ class AnimationState(Enum):
     REACTING = auto()
     DANCING = auto()
     DRAGGING = auto()
+    RUNNING = auto()
+    SITTING = auto()
+    WAVING = auto()
+    HAPPY = auto()
+    SLEEPING = auto()
+    SAD = auto()
+    ANGRY = auto()
+    SHY = auto()
+    PEEKING = auto()
+
+
+ACTION_STATES = {name: AnimationState[name.upper()] for name in ACTION_FOLDERS
+                 if name.upper() in AnimationState.__members__}
+ACTION_STATES.update(walk=AnimationState.WALKING, dance=AnimationState.DANCING,
+                     blink=AnimationState.BLINKING, surprised=AnimationState.REACTING)
 
 
 def _frame_order(path: Path) -> list:
@@ -56,12 +72,21 @@ class SpriteAnimation:
                  fallback_root: Path | None = None) -> None:
         self.motion_fps = motion_fps
         self.frames: dict[str, list[QPixmap]] = {"static": [fallback]}
-        for name in ("walk", "idle", "blink", "happy", "surprised", "shy", "dance"):
+        for name, aliases in ACTION_FOLDERS.items():
             for source_root in (root, fallback_root):
                 frames = []
-                first_image = None
-                distinct = False
-                paths = sorted((source_root / name).glob("*.png"), key=_frame_order) if source_root is not None else []
+                source_sizes = []
+                # Prefer the first populated alias, without joining two copies of
+                # the same animation. Imported packs normalize these names too.
+                paths = []
+                if source_root is not None and source_root.is_dir():
+                    folders = {p.name.lower(): p for p in source_root.iterdir() if p.is_dir()}
+                    for alias in aliases:
+                        folder = folders.get(alias)
+                        if folder is not None:
+                            paths = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".png"), key=_frame_order)
+                            if paths:
+                                break
                 for path in paths:
                     image = QImage(str(path), "PNG")
                     if image.isNull():
@@ -71,14 +96,26 @@ class SpriteAnimation:
                     # bottom-center. The source files and their aspect ratios stay intact.
                     bounds = _visible_bounds(image)
                     if not bounds.isEmpty():
+                        source_sizes.append((image.width(), image.height()))
                         image = image.copy(bounds).convertToFormat(QImage.Format.Format_RGBA8888)
-                        if first_image is None:
-                            first_image = image
-                        elif image != first_image:
-                            distinct = True
                         frames.append(QPixmap.fromImage(image))
-                # Motion needs different poses; repeated copies of one PNG are static.
-                if frames and (name not in ("walk", "dance") or distinct):
+                if frames:
+                    # Poses exported on the same canvas share one scale. A wider
+                    # arm pose must not shrink the body on just that frame.
+                    extents = {}
+                    for size, frame in zip(source_sizes, frames):
+                        extents[size] = extents.get(size, QSize()).expandedTo(frame.size())
+                    for index, (size, frame) in enumerate(zip(source_sizes, frames)):
+                        canvas = QPixmap(extents[size])
+                        canvas.fill(Qt.GlobalColor.transparent)
+                        painter = QPainter(canvas)
+                        painter.drawPixmap((canvas.width() - frame.width()) // 2,
+                                           canvas.height() - frame.height(), frame)
+                        painter.end()
+                        frames[index] = canvas
+                    # Identical copies are a static pose, not a fabricated cycle.
+                    if all(frame.toImage() == frames[0].toImage() for frame in frames[1:]):
+                        frames = frames[:1]
                     self.frames[name] = frames
                     break
 
@@ -89,8 +126,11 @@ class SpriteAnimation:
         self._reaction_duration = 1.0
         self._temporary_remaining = 0.0
         self._temporary_duration = 0.0
-        self._dance_remaining = 0.0
+        self._action_remaining = 0.0
+        self._action_name: str | None = None
+        self._hold_action = False
         self._walking = False
+        self._running = False
         self.state = "idle"
         self._time = 0.0
         self._cache: dict[tuple[str, int], QPixmap] = {}
@@ -112,44 +152,76 @@ class SpriteAnimation:
             self.state = name
             self._time = 0.0
 
-    def set_walking(self, walking: bool) -> None:
+    def set_walking(self, walking: bool, running: bool = False) -> None:
         self._walking = walking
-        if self._dance_remaining > 0:
-            return  # Update the state to resume after dancing finishes.
+        self._running = walking and running
+        if self.action_active:
+            return  # Update the state to resume after the action finishes.
         self._temporary_remaining = 0.0
-        self._select("walk" if walking else "idle")
+        self._select(self._base_state)
+
+    @property
+    def _base_state(self) -> str:
+        return ("running" if self._running else "walk") if self._walking else "idle"
+
+    @property
+    def action_active(self) -> bool:
+        return self._action_remaining > 0
+
+    @property
+    def _dance_remaining(self) -> float:
+        return self._action_remaining if self._action_name == "dance" else 0.0
 
     @property
     def animation_state(self) -> AnimationState:
         if self._reaction_frame is not None:
             return AnimationState.REACTING
-        if self._dance_remaining > 0:
-            return AnimationState.DANCING
+        if self.action_active:
+            return ACTION_STATES[self._action_name]
         if self._temporary_remaining > 0:
             return AnimationState.BLINKING if self.state == "blink" else AnimationState.REACTING
-        return AnimationState.WALKING if self._walking else AnimationState.IDLE
+        return ACTION_STATES[self._base_state]
 
     @property
     def can_dance(self) -> bool:
         return "dance" in self.frames
 
     def begin_dance(self, duration: float = DANCE_SECONDS) -> bool:
-        if (not self.can_dance or self.animation_state in (AnimationState.REACTING, AnimationState.DANCING)
+        return self.begin_action("dance", duration)
+
+    def begin_action(self, name: str, duration: float | None = None, *, hold: bool = False) -> bool:
+        name = normalize_action(name)
+        duration = ACTION_SECONDS.get(name, 2.0) if duration is None else duration
+        if (name not in self.frames or name not in ACTION_STATES or self.action_active
+                or self.animation_state == AnimationState.REACTING
                 or not math.isfinite(duration) or duration <= 0):
             return False
         self._temporary_remaining = 0.0
-        self._dance_remaining = duration
-        self._select("dance")
+        self._action_remaining = duration
+        self._action_name = name
+        self._hold_action = hold
+        self._select(name)
         return True
 
     def end_dance(self) -> None:
         if self._dance_remaining > 0:
-            self._dance_remaining = 0.0
-            self._select("walk" if self._walking else "idle")
+            self.end_action()
+
+    def end_action(self) -> None:
+        self._action_remaining = 0.0
+        self._hold_action = False
+        self._action_name = None
+        self._select(self._base_state)
+
+    def cancel_overrides(self) -> None:
+        self.end_reaction()
+        self._temporary_remaining = 0.0
+        self.end_action()
 
     def show_expression(self, name: str, duration: float = 1.2) -> bool:
-        if (self._reaction_frame is not None or self._dance_remaining > 0 or self._temporary_remaining > 0
-                or self._walking or name not in ("blink", "happy", "surprised", "shy") or name not in self.frames):
+        name = normalize_action(name)
+        if (self._reaction_frame is not None or self.action_active or self._temporary_remaining > 0
+                or self._walking or name not in ACTION_STATES or name not in self.frames):
             return False
         if not math.isfinite(duration) or duration <= 0:
             return False
@@ -160,7 +232,8 @@ class SpriteAnimation:
         return True
 
     def begin_reaction(self, name: str, duration: float) -> bool:
-        if (self.animation_state in (AnimationState.REACTING, AnimationState.DANCING)
+        name = normalize_action(name)
+        if (self.animation_state == AnimationState.REACTING or self.action_active
                 or not math.isfinite(duration) or duration <= 0):
             return False
         # Overlay the pose while keeping the underlying walk/idle phase intact.
@@ -168,7 +241,7 @@ class SpriteAnimation:
         self._reaction_frame = (name, 0) if name in self.frames else self.frame_key
         # A reaction interrupts a blink; do not resume closed eyes afterward.
         self._temporary_remaining = 0.0
-        self._select("walk" if self._walking else "idle")
+        self._select(self._base_state)
         self._reaction_duration = duration
         self._reaction_time = 0.0
         self._reaction_animated = name in self.frames
@@ -183,12 +256,14 @@ class SpriteAnimation:
             if self._reaction_time >= self._reaction_duration:
                 self.end_reaction()
             return
-        if self._dance_remaining > 0:
+        if self.action_active:
             self._time += elapsed
-            if elapsed >= self._dance_remaining:
-                self.end_dance()
+            if self._hold_action:
+                return
+            if elapsed >= self._action_remaining:
+                self.end_action()
             else:
-                self._dance_remaining -= elapsed
+                self._action_remaining -= elapsed
             return
         if not self._walking:
             if self._temporary_remaining > 0:
@@ -210,13 +285,13 @@ class SpriteAnimation:
                 count = len(self.frames[name])
                 index = min(count - 1, int(self._reaction_time / self._reaction_duration * count))
             return name, index
-        name = self.state if self.state in self.frames else "static"
+        name = self.state if self.state in self.frames else ("idle" if "idle" in self.frames else "static")
         count = len(self.frames[name])
         if self._temporary_remaining > 0:
             progress = 1 - self._temporary_remaining / self._temporary_duration
             index = min(count - 1, int(progress * count))
         else:
-            rate = self.motion_fps if self.motion_fps is not None and name in ("walk", "dance") else FRAME_RATES.get(name, 1)
+            rate = self.motion_fps if self.motion_fps is not None and name not in ("idle", "blink", "sleeping") else FRAME_RATES.get(name, 8)
             index = int(self._time * rate) % count
         return name, index
 

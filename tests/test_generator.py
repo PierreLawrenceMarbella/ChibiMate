@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import httpx
 from openai import AsyncOpenAI
-from PySide6.QtCore import QBuffer, QIODevice, Qt
+from PySide6.QtCore import QBuffer, QEvent, QIODevice, Qt
 from PySide6.QtGui import QImage
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -74,6 +74,10 @@ class GeneratorTests(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+        for widget in self.app.topLevelWidgets():
+            widget.close()
+            widget.deleteLater()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.env.stop()
         self.temp.cleanup()
 

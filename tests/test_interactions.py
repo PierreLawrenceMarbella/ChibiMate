@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, Qt
 from PySide6.QtGui import QColor, QContextMenuEvent, QImage, QMouseEvent, QPainter
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication
 
 from app.dialogue import BUBBLE_MILLISECONDS
@@ -34,6 +34,10 @@ class InteractionTests(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+        for widget in self.app.topLevelWidgets():
+            widget.close()
+            widget.deleteLater()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.temp.cleanup()
 
     def trigger(self, kind='happy'):
@@ -78,7 +82,6 @@ class InteractionTests(unittest.TestCase):
         window._start_walk()
         before = window.pos()
         remaining = window._remaining
-        random_remaining = window._random_reaction_remaining
         self.click_menu_action(window._dance_action)
         self.assertEqual(window.animation_state, AnimationState.DANCING)
         self.assertEqual(window._sprites.frame_key, ('dance', 0))
@@ -86,11 +89,13 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(window._sprites.frame_key, ('dance', 1))
         self.assertEqual(window.pos(), before)
         self.assertEqual(window._remaining, remaining)
-        self.assertEqual(window._random_reaction_remaining, random_remaining)
+        random_remaining = window._behavior.remaining
+        window._advance(0.1)
+        self.assertEqual(window._behavior.remaining, random_remaining)
         self.assertFalse(window.trigger_random_reaction())
         self.open_menu()
-        self.assertFalse(window._reaction_action.isEnabled())
-        self.assertFalse(window._dance_action.isEnabled())
+        self.assertTrue(window._reaction_action.isEnabled())
+        self.assertTrue(window._dance_action.isEnabled())
         snapshot = (window.pos(), window._sprites._dance_remaining)
         window._timer.start()
         QTest.qWait(80)
@@ -126,7 +131,7 @@ class InteractionTests(unittest.TestCase):
         before = window.pos()
         window._advance(0.5)
         self.assertEqual(window.pos(), before)
-        self.assertFalse(window.start_dance())
+        self.assertFalse(window.start_dance())  # Dragging takes priority over commands.
         QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=local)
         self.assertEqual(window.animation_state, AnimationState.IDLE)
         self.assertTrue(window._movement_paused)
@@ -254,13 +259,14 @@ class InteractionTests(unittest.TestCase):
     def test_random_idle_reaction_waits_for_idle_and_resets_interval(self):
         window = self.window
         window._start_walk()
-        window._random_reaction_remaining = 0
+        window._behavior.remaining = 0
         window._advance(0.05)
         self.assertFalse(window._bubble.isVisible())
         window._start_idle()
-        window._advance(0.05)
+        with patch.object(window._behavior.random, 'choices', return_value=['happy']):
+            window._advance(0.05)
         self.assertTrue(window._bubble.isVisible())
-        self.assertTrue(20 <= window._random_reaction_remaining <= 45)
+        self.assertTrue(20 <= window._behavior.remaining <= 45)
         bubble_text = window._bubble._text
         window._advance(0.05)
         self.assertEqual(window._bubble._text, bubble_text)
@@ -302,7 +308,7 @@ class InteractionTests(unittest.TestCase):
         self.assertTrue(window._bubble.isVisible())
         self.assertTrue(window._bubble._timer.isActive())
         self.open_menu()
-        self.assertFalse(window._reaction_action.isEnabled())
+        self.assertTrue(window._reaction_action.isEnabled())  # Explicit actions have priority.
         window._timer.start()
         action = window._menu.actions()[-1]
         QTest.mouseClick(window._menu, Qt.MouseButton.LeftButton,
@@ -324,8 +330,9 @@ class InteractionTests(unittest.TestCase):
         self.assertTrue(bubble.windowFlags() & Qt.WindowType.WindowTransparentForInput)
         self.assertTrue(bubble.windowFlags() & Qt.WindowType.WindowDoesNotAcceptFocus)
         self.assertEqual(bubble.windowType(), Qt.WindowType.Tool)
+        expired = QSignalSpy(bubble._timer.timeout)
         bubble._timer.start(30)
-        QTest.qWait(70)
+        self.assertTrue(expired.wait(1000))
         self.assertFalse(bubble.isVisible())
         self.assertFalse(bubble._timer.isActive())
 

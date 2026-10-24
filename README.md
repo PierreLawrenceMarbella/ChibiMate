@@ -1,4 +1,4 @@
-# ChibiMate - Phase 7
+# ChibiMate
 
 A small, transparent, always-on-top desktop chibi for Windows 10/11.
 Requires Python 3.11 or newer. Dependencies are PySide6 and the official OpenAI Python SDK.
@@ -32,30 +32,26 @@ With an activated environment, run `python main.py`.
   static image during movement and reactions; restoring Alya restores her sprites.
 - The menu also offers **Pause Movement / Resume Movement**, **Trigger Random
   Reaction**, and **Exit ChibiMate**. Pausing still allows dragging and reactions.
-- **Dance** is enabled only when `assets/characters/alya/dance/` contains at least
-  two different readable poses (`dance_01.png`, `dance_02.png`, …). It loops for
-  6 seconds at 8 fps, suspends walking, then resumes the previous behavior.
-  Dragging interrupts dancing; reactions and dances never overlap.
-  No dance or shy frames are currently supplied. The supplied blink is a wink pose.
-- Sprite PNGs load from `assets/characters/alya/{walk,idle,blink,happy,surprised}/`.
-  Numbered names sort naturally (`walk_1.png`, `walk_2.png`, …). Walking loops
-  at 8 fps and needs at least two distinct valid poses; idle loops at 2 fps or holds
-  a single pose with bobbing. Blink and expression folders can hold one pose.
-  The supplied walk sequence is `walk_01.png` through `walk_08.png`, making
-  one complete loop per second.
+- **Dance** uses the supplied `dance/` or `dancing/` frames for 6 seconds,
+  suspends walking, and then resumes the previous behavior. One frame holds a
+  static pose; multiple distinct frames animate at 8 fps. Dragging interrupts actions.
+- Sprite PNGs load from action folders under `assets/characters/alya/` in natural
+  filename order (`walk_1.png`, `walk_2.png`, ...). Each action accepts any number
+  of frames; a single frame holds a pose. The supplied walking cycle has eight
+  frames. Idle loops at 2 fps with gentle bobbing.
 - During idle, blink frames appear every 3–6 seconds. Automatic reactions are
   scheduled every 20–45 seconds and wait for idle; speech bubbles never stack.
   Bubbles stay on screen, let mouse clicks through, and hide automatically.
   An optional `shy/` sprite folder is supported alongside the existing poses.
 - Frames are centered at the feet on a fixed transparent canvas, fit within
-  200 × 150 logical pixels at Medium size, and retain their aspect ratios. Missing, empty,
-  or insufficient walk/idle sequences fall back to `assets/alya.png`; missing
+  200 × 150 logical pixels at Medium size, and retain their aspect ratios. Missing or empty
+  action folders fall back to idle or `assets/alya.png`; missing
   reaction poses use dialogue instead. If the static PNG is missing or unreadable,
   a console warning accompanies the built-in placeholder.
   Asset paths work from any launch directory. White-background originals are
   preserved in `assets/characters/alya/originals/`; playback uses the prepared PNGs.
 
-Adjust `WALK_SPEED` (logical pixels/second), `IDLE_SECONDS`, `WALK_SECONDS`,
+Adjust `WALK_SPEED`, `RUN_SPEED` (logical pixels/second), `IDLE_SECONDS`, `WALK_SECONDS`,
 and the bob settings in `app/window.py` to tune the behavior. A small transparent
 margin keeps the idle bob inside the window at every size.
 
@@ -90,11 +86,10 @@ stay out of persistent storage. Reference files and Alya's sprites are unchanged
 
 Right-click **Import Animation Pack** to add animations to the current character,
 including default Alya. For another character, choose its PNG with **Change Character** first.
-Select a folder or ZIP containing `idle/`, `walk/`, `blink/`, `happy/`,
-`surprised/`, optional `shy/`, and/or `dance/` PNG frames. A ZIP may wrap these
-inside one character folder. Preview available actions, choose 8?12 FPS for
-walking/dancing, then apply or cancel. Missing actions use the character PNG or
-dialogue; walking and dancing need at least two distinct poses.
+Select a folder or ZIP containing any supported action folders listed below.
+A ZIP may wrap these inside one character folder. Preview available actions, choose 8-12 FPS for
+action animations, then apply or cancel. Missing actions use idle, the character
+PNG, or dialogue; one frame holds a static pose.
 
 Accepted packs live in `%LOCALAPPDATA%\ChibiMate\animation-packs`. Associations
 survive restarts; selecting the same unchanged PNG again restores its pack.
@@ -106,3 +101,34 @@ Imports are limited to 256 PNGs, 2048px per side, 12 MB per frame, 24 megapixels
 decoded total, and 100 MB compressed/expanded. Unsafe paths, links, damaged
 images, and duplicate paths are rejected. This workflow is entirely offline,
 needs no API key, and does not create animation artwork from a static image.
+
+## Actions and character settings
+
+Supported folders: `idle/`, `walking/`, `running/`, `sitting/`, `waving/`, `happy/`,
+`dancing/`, `sleeping/`, `sad/`, `angry/`, `shy/`, `peeking/`, plus `blink/` and
+`surprised/`. Short aliases `walk`, `run`, `sit`, `wave`, `dance`, `sleep`, and
+`peek` also work. Bundled assets currently provide idle (1), walk (8), blink (1),
+happy (1), and surprised (1). The other actions need your own PNGs.
+
+Right-click **Actions** to test available poses or animations, **Pet / Trigger
+Happy**, **Sit**, **Dance**, **Sleep**, or **Return to Idle / Wake Up**. Missing
+poses are disabled; a single image is labeled as a static pose.
+Action durations are in `app/actions.py`.
+
+**Character Settings** offers PNG selection, a 75-300px size slider, transparency,
+always-on-top, and horizontal cursor following. These settings persist locally.
+**Hide** pauses the companion; use its system-tray icon to show it again or exit.
+Hide is disabled when no system tray is available. All actions and pack imports
+work offline. Custom characters use only their own frames or static PNG.
+
+Phase 8A adds **Enable / Disable Autonomous Behavior** and **Behavior Frequency**
+(Low / Normal / High) to the right-click menu. These and **Pause Movement** persist
+across restarts. Pause suspends automatic decisions and actions; manual commands
+and dragging remain available. Explicit commands override reactions and autonomous
+poses, while dragging has highest priority. With suitable sprites, the character
+occasionally runs, sits, waves, or reacts, without repeating the same pose back to
+back. At Normal frequency, sleep becomes eligible after 90-150 active seconds
+without companion interaction; click or choose **Return to Idle / Wake Up** to wake.
+Sleep stays stationary until awakened. Missing action sprites are skipped; static
+characters retain walking movement, idle bobbing, and manual dialogue reactions.
+Intervals and selection weights are configurable in `app/behavior.py`.

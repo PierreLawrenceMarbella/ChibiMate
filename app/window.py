@@ -8,6 +8,8 @@ from pathlib import Path
 from PySide6.QtCore import QElapsedTimer, QPoint, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QActionGroup,
+    QCursor,
+    QIcon,
     QCloseEvent,
     QContextMenuEvent,
     QMouseEvent,
@@ -15,20 +17,23 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPixmap,
 )
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMenu, QMessageBox, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon, QWidget
 
 from app.character import create_placeholder
 from app.bubble import SpeechBubble
 from app.dialogue import (
-    BUBBLE_MILLISECONDS, CLICK_REACTIONS, DIALOGUE, RANDOM_REACTION_SECONDS, REACTION_SECONDS,
+    BUBBLE_MILLISECONDS, CLICK_REACTIONS, DIALOGUE, REACTION_SECONDS,
 )
+from app.behavior import BehaviorController, FREQUENCIES, Priority
 from app.sprites import AnimationState, DANCE_SECONDS, SPRITE_PATH, SpriteAnimation
-from app.preferences import CHARACTER_HEIGHTS, CharacterPreferences
+from app.preferences import CHARACTER_HEIGHTS, MIN_HEIGHT, MAX_HEIGHT, CharacterPreferences
+from app.actions import ACTIONS, ACTION_LABELS, normalize_action
 
 
 CHARACTER_PATH = Path(__file__).resolve().parent.parent / "assets" / "alya.png"
 MAX_CHARACTER_SIZE = QSize(200, 150)
 WALK_SPEED = 32.0  # Logical pixels per second.
+RUN_SPEED = 70.0
 IDLE_SECONDS = (3.0, 8.0)
 WALK_SECONDS = (2.0, 5.0)
 BOB_AMPLITUDE = 1.5  # Three pixels of total vertical travel.
@@ -53,13 +58,21 @@ class CharacterWindow(QWidget):
         self._press_position: QPoint | None = None
         self._dragging = False
         self._movement_paused = False
+        self._action_priority = Priority.IDLE
+        self._bubble_priority = Priority.IDLE
+        self._manual_movement = False
         self._reaction_remaining = 0.0
         self._reaction_random = random.Random()
-        self._random_reaction_remaining = self._reaction_random.uniform(*RANDOM_REACTION_SECONDS)
         self._dialog_open = False
         self._generator = None
         self._exit_after_generator = False
+        self._quit_from_tray = False
         self._preferences = preferences if preferences is not None else CharacterPreferences()
+        enabled, frequency, self._movement_paused = self._preferences.behavior_options
+        self._behavior = BehaviorController(enabled, frequency)
+        self._opacity, self._always_on_top, self._follow_cursor = self._preferences.display_options
+        self.setWindowOpacity(self._opacity / 100)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._always_on_top)
         self._default_character_path = character_path
         self._default_sprite_path = sprite_path
         self._character_height = self._preferences.height
@@ -80,8 +93,10 @@ class CharacterWindow(QWidget):
         )
 
         self._bubble = SpeechBubble(self)
+        self._bubble.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._always_on_top)
         self._menu = QMenu(self)
         self._menu.addAction("Change Character", self.change_character)
+        self._menu.addAction("Character Settings", self.open_settings)
         self._size_menu = self._menu.addMenu("Character Size")
         self._size_group = QActionGroup(self)
         self._size_group.setExclusive(True)
@@ -98,12 +113,41 @@ class CharacterWindow(QWidget):
         self._pack_action = self._menu.addAction("Import Animation Pack", self.import_animation_pack)
         self._menu.addSeparator()
         self._pause_action = self._menu.addAction("Pause Movement", self._toggle_movement)
+        self._autonomy_action = self._menu.addAction("Disable Autonomous Behavior", self._toggle_autonomy)
+        frequency_menu = self._menu.addMenu("Behavior Frequency")
+        self._frequency_group = QActionGroup(self)
+        self._frequency_group.setExclusive(True)
+        self._frequency_actions = {}
+        for frequency in FREQUENCIES:
+            action = frequency_menu.addAction(frequency)
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked=False, frequency=frequency: self.set_behavior_options(frequency=frequency))
+            self._frequency_group.addAction(action)
+            self._frequency_actions[frequency] = action
         self._reaction_action = self._menu.addAction(
-            "Trigger Random Reaction", lambda: self.trigger_random_reaction(),
+            "Trigger Random Reaction", lambda: self.trigger_random_reaction(explicit=True),
         )
         self._dance_action = self._menu.addAction("Dance", lambda: self.start_dance())
+        self._pet_action = self._menu.addAction("Pet / Trigger Happy", lambda: self.trigger_random_reaction(name="happy", explicit=True))
+        self._sit_action = self._menu.addAction("Sit", lambda: self.perform_action("sitting"))
+        self._sleep_action = self._menu.addAction("Sleep", lambda: self.perform_action("sleeping"))
+        actions_menu = self._menu.addMenu("Actions")
+        self._action_controls = {}
+        for name in ACTIONS:
+            action = actions_menu.addAction(ACTION_LABELS[name])
+            action.triggered.connect(lambda checked=False, name=name: self.perform_action(name))
+            self._action_controls[name] = action
+        self._menu.addAction("Return to Idle / Wake Up", self.return_to_idle)
         self._menu.addSeparator()
+        self._hide_action = self._menu.addAction("Hide (restore from tray)", self.hide_companion)
         self._menu.addAction("Exit ChibiMate", self.close)
+        self._tray = QSystemTrayIcon(QIcon(self._character), self)
+        self._tray.setToolTip("ChibiMate — click to show")
+        self._tray_menu = QMenu(self)
+        self._tray_menu.addAction("Show ChibiMate", self.show_companion)
+        self._tray_menu.addAction("Exit ChibiMate", self._exit_from_tray)
+        self._tray.setContextMenu(self._tray_menu)
+        self._tray.activated.connect(self._tray_activated)
         self._menu.aboutToShow.connect(self._update_menu)
         self._menu.aboutToHide.connect(self._menu_closed)
         self._position_initially()
@@ -155,6 +199,8 @@ class CharacterWindow(QWidget):
 
     def _apply_character(self, character: QPixmap, filename: str) -> None:
         self._cancel_reaction()
+        self._action_priority = Priority.IDLE
+        self._behavior.reset()
         self._drag_offset = self._press_position = None
         self._dragging = False
         self.setCursor(Qt.CursorShape.OpenHandCursor)
@@ -184,6 +230,7 @@ class CharacterWindow(QWidget):
 
     def change_character(self) -> None:
         was_active = self._timer.isActive()
+        was_dialog_open = self._dialog_open
         self._timer.stop()
         self._dialog_open = True
         try:
@@ -194,13 +241,13 @@ class CharacterWindow(QWidget):
         except (OSError, ValueError) as error:
             self._show_character_error(error)
         finally:
-            self._dialog_open = False
+            self._dialog_open = was_dialog_open
             self._clock.restart()
             if was_active and self.isVisible():
                 self._timer.start()
 
     def set_character_size(self, height: int) -> None:
-        if height not in CHARACTER_HEIGHTS.values():
+        if not MIN_HEIGHT <= height <= MAX_HEIGHT:
             return
         try:
             self._preferences.save(self._custom_file, height)
@@ -209,6 +256,61 @@ class CharacterWindow(QWidget):
         except OSError as error:
             self._show_character_error(error)
         self._update_menu()
+
+    def open_settings(self) -> None:
+        from app.settings_dialog import CharacterSettingsDialog
+        dialog = CharacterSettingsDialog(self)
+        self._dialog_open = True
+        try:
+            dialog.exec()
+        finally:
+            self._dialog_open = False
+            self._clock.restart()
+            dialog.deleteLater()
+
+    def set_display_options(self, opacity: int, top: bool, follow: bool) -> None:
+        opacity = max(20, min(100, opacity))
+        try:
+            self._preferences.save_display_options(opacity, top, follow)
+        except OSError as error:
+            self._show_character_error(error)
+            return
+        self._opacity, self._follow_cursor = opacity, follow
+        self.setWindowOpacity(opacity / 100)
+        if top != self._always_on_top:
+            visible = self.isVisible()
+            self._always_on_top = top
+            self._bubble.dismiss()
+            self._bubble.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, top)
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, top)
+            if visible:
+                self.show()
+            self._keep_on_screen()
+
+    def hide_companion(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+        self._tray.setIcon(QIcon(self._character))
+        self._tray.show()
+        self._timer.stop()
+        self._cancel_reaction()
+        self.hide()
+
+    def show_companion(self) -> None:
+        self.show()
+        self._tray.hide()
+        self._keep_on_screen()
+        self._clock.restart()
+        self._timer.start()
+
+    def _tray_activated(self, reason) -> None:
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self.show_companion()
+
+    def _exit_from_tray(self) -> None:
+        # A hidden last window does not emit lastWindowClosed on every platform.
+        self._quit_from_tray = True
+        self.close()
 
     def restore_default(self) -> None:
         try:
@@ -309,20 +411,27 @@ class CharacterWindow(QWidget):
 
     def _start_idle(self) -> None:
         self._walking = False
+        self._manual_movement = False
+        self._running = False
         self._sprites.set_walking(False)
-        self._remaining = random.uniform(*IDLE_SECONDS)
+        self._remaining = random.uniform(*IDLE_SECONDS) * self._behavior.interval_scale
         self._idle_phase = 0.0
         self._walk_x = float(self.x())
 
-    def _start_walk(self) -> None:
+    def _start_walk(self, running: bool = False, manual: bool = False) -> None:
         self._walking = True
-        self._sprites.set_walking(True)
+        self._manual_movement = manual
+        self._running = running
+        self._sprites.set_walking(True, running)
         self._direction = random.choice((-1, 1))
         self._remaining = random.uniform(*WALK_SECONDS)
         self._walk_x = float(self.x())
 
     def _resume_behavior(self) -> None:
         self._keep_on_screen()
+        self._sprites.cancel_overrides()
+        self._action_priority = Priority.IDLE
+        self._behavior.reset()
         self._start_idle()
         self._clock.restart()
 
@@ -334,10 +443,23 @@ class CharacterWindow(QWidget):
         for height, action in self._size_actions.items():
             action.setChecked(height == self._character_height)
         self._pause_action.setText("Resume Movement" if self._movement_paused else "Pause Movement")
-        busy = self.animation_state in (AnimationState.REACTING, AnimationState.DANCING, AnimationState.DRAGGING)
-        available = not busy and not self._bubble.isVisible() and not self._dialog_open
+        self._autonomy_action.setText("Disable Autonomous Behavior" if self._behavior.enabled else "Enable Autonomous Behavior")
+        for name, action in self._frequency_actions.items():
+            action.setChecked(name == self._behavior.frequency)
+        # Explicit controls can replace lower-priority automatic poses/reactions.
+        available = not self._dragging and not self._dialog_open
         self._reaction_action.setEnabled(available)
         self._dance_action.setEnabled(available and self._sprites.can_dance)
+        self._dance_action.setText("Dance (static pose)" if len(self._sprites.frames.get("dance", [])) == 1 else "Dance")
+        self._pet_action.setEnabled(available)
+        self._sit_action.setEnabled(available and "sitting" in self._sprites.frames)
+        self._sleep_action.setEnabled(available and "sleeping" in self._sprites.frames)
+        for name, action in self._action_controls.items():
+            action.setEnabled(available and (name == "idle" or name in self._sprites.frames)
+                              and not (self._movement_paused and name in ("walk", "running")))
+            count = len(self._sprites.frames.get(name, []))
+            action.setText(ACTION_LABELS[name] + (" (static pose)" if count == 1 else ""))
+        self._hide_action.setEnabled(QSystemTrayIcon.isSystemTrayAvailable())
 
     @property
     def animation_state(self) -> AnimationState:
@@ -347,38 +469,128 @@ class CharacterWindow(QWidget):
         return self._sprites.animation_state
 
     def start_dance(self, duration: float = DANCE_SECONDS) -> bool:
-        if (self._dialog_open or self._drag_offset is not None or self._menu.isVisible()
-                or self._reaction_remaining > 0 or self._bubble.isVisible()):
+        return self.perform_action("dance", duration)
+
+    @property
+    def behavior_priority(self) -> Priority:
+        if self._drag_offset is not None:
+            return Priority.DRAGGING
+        if self._sprites.action_active or self.animation_state == AnimationState.REACTING:
+            return self._action_priority
+        if self._walking:
+            return Priority.MANUAL if self._manual_movement else Priority.AUTONOMOUS
+        return Priority.IDLE
+
+    @property
+    def autonomous_active(self) -> bool:
+        return self._behavior.enabled and not self._movement_paused
+
+    def _prepare_action(self, priority: Priority) -> bool:
+        if self._dialog_open or self._drag_offset is not None or self._menu.isVisible():
             return False
-        if not self._sprites.begin_dance(duration):
+        if priority == Priority.AUTONOMOUS:
+            return (self.autonomous_active and self.behavior_priority == Priority.IDLE
+                    and not self._bubble.isVisible())
+        if priority < Priority.MANUAL:
+            if self.behavior_priority >= priority:
+                return False
+            if self._bubble.isVisible() and self._bubble_priority >= priority:
+                return False
+        # User commands replace automatic actions, without ever stacking poses.
+        if (self._sprites.action_active or self.animation_state == AnimationState.REACTING
+                or self._bubble.isVisible()):
+            self._cancel_reaction()
+            self._sprites.cancel_overrides()
+        self._behavior.reset()
+        return True
+
+    def perform_action(self, name: str, duration: float | None = None, automatic: bool = False) -> bool:
+        name = normalize_action(name)
+        if duration is not None and (not math.isfinite(duration) or duration <= 0):
             return False
+        priority = Priority.AUTONOMOUS if automatic else Priority.MANUAL
+        if name != "idle" and name not in self._sprites.frames:
+            return False
+        if name in ("walk", "running") and self._movement_paused:
+            return False
+        if not self._prepare_action(priority):
+            return False
+        if name == "idle":
+            self.return_to_idle()
+            return True
+        if name in ("walk", "running"):
+            self._start_walk(running=name == "running", manual=not automatic)
+        else:
+            if name == "sleeping":
+                self._start_idle()  # Never resume a stale walk after waking.
+            if not self._sprites.begin_action(name, duration, hold=name == "sleeping"):
+                return False
+            self._action_priority = priority
+        if name in DIALOGUE:
+            area = self._available_area()
+            if area is not None:
+                self._bubble.show_message(self._reaction_random.choice(DIALOGUE[name]), self.geometry(), area, BUBBLE_MILLISECONDS)
+                self._bubble_priority = priority
         self._clock.restart()
         self.update()
         return True
 
+    def return_to_idle(self) -> None:
+        self._cancel_reaction()
+        self._resume_behavior()
+        self.update()
+
     def _toggle_movement(self) -> None:
-        self._movement_paused = not self._movement_paused
-        self._start_idle()
+        self.set_behavior_options(paused=not self._movement_paused)
+
+    def _toggle_autonomy(self) -> None:
+        self.set_behavior_options(enabled=not self._behavior.enabled)
+
+    def set_behavior_options(self, enabled: bool | None = None, frequency: str | None = None,
+                             paused: bool | None = None) -> None:
+        enabled = self._behavior.enabled if enabled is None else enabled
+        frequency = self._behavior.frequency if frequency is None else frequency
+        paused = self._movement_paused if paused is None else paused
+        try:
+            self._preferences.save_behavior_options(enabled, frequency, paused)
+        except (OSError, ValueError) as error:
+            self._show_character_error(error)
+            return
+        changed = enabled != self._behavior.enabled or frequency != self._behavior.frequency
+        self._movement_paused = paused
+        if changed:
+            self._behavior.configure(enabled, frequency)
+        if paused or (not enabled and not self._manual_movement):
+            self._start_idle()
+        if not enabled and self._action_priority == Priority.AUTONOMOUS and self.animation_state != AnimationState.SLEEPING:
+            self._cancel_reaction()
+            self._sprites.cancel_overrides()
+            self._action_priority = Priority.IDLE
+        self._clock.restart()
         self._update_menu()
 
-    def trigger_random_reaction(self, automatic: bool = False) -> bool:
-        if (self._dialog_open or self._drag_offset is not None or self._menu.isVisible()
-                or self.animation_state in (AnimationState.REACTING, AnimationState.DANCING)
-                or self._reaction_remaining > 0 or self._bubble.isVisible()):
-            return False
+    def trigger_random_reaction(self, automatic: bool = False, name: str | None = None, explicit: bool = False) -> bool:
         if automatic and self._walking:
             return False
         area = self._available_area()
         if area is None:
             return False
-        names = tuple(DIALOGUE) if automatic else CLICK_REACTIONS
-        name = self._reaction_random.choice(names)
+        names = tuple(n for n in CLICK_REACTIONS if n in self._sprites.frames) if automatic else CLICK_REACTIONS
+        if name is None and not names:
+            return False
+        name = name or self._reaction_random.choice(names)
+        if name not in DIALOGUE or (automatic and name not in self._sprites.frames):
+            return False
+        priority = Priority.AUTONOMOUS if automatic else (Priority.MANUAL if explicit else Priority.REACTION)
+        if not self._prepare_action(priority):
+            return False
         message = self._reaction_random.choice(DIALOGUE[name])
         duration = self._reaction_random.uniform(*REACTION_SECONDS)
         if not self._sprites.begin_reaction(name, duration):
             return False
         self._reaction_remaining = duration
-        self._random_reaction_remaining = self._reaction_random.uniform(*RANDOM_REACTION_SECONDS)
+        self._action_priority = priority
+        self._bubble_priority = priority
         self._bubble.show_message(message, self.geometry(), area, BUBBLE_MILLISECONDS)
         self.update()
         return True
@@ -387,6 +599,7 @@ class CharacterWindow(QWidget):
         self._reaction_remaining = 0.0
         self._sprites.end_reaction()
         self._bubble.dismiss()
+        self._bubble_priority = Priority.IDLE
 
     def _tick(self) -> None:
         # Elapsed time keeps speed consistent; cap long stalls to avoid jumps
@@ -401,33 +614,66 @@ class CharacterWindow(QWidget):
             return
         # Rechecking geometry also handles taskbar changes and removed monitors.
         area = self._keep_on_screen()
-        if self.animation_state == AnimationState.DANCING:
+        if self._sprites.action_active:
+            if self._action_priority == Priority.AUTONOMOUS and not self.autonomous_active:
+                return
             self._sprites.advance(elapsed)
+            if not self._sprites.action_active:
+                self._action_priority = Priority.IDLE
             self._bob_offset *= math.exp(-12 * elapsed)
+            if self._bubble.isVisible() and area is not None:
+                self._bubble.place_near(self.geometry(), area)
             self.update()
             return
         if self.animation_state == AnimationState.REACTING or self._reaction_remaining > 0:
+            if self._action_priority == Priority.AUTONOMOUS and not self.autonomous_active:
+                return
             if self._bubble.isVisible() and area is not None:
                 self._bubble.place_near(self.geometry(), area)
             self._sprites.advance(elapsed)
             self._reaction_remaining = max(0.0, self._reaction_remaining - elapsed)
             if self._reaction_remaining == 0:
                 self._sprites.end_reaction()
+            if self.animation_state != AnimationState.REACTING:
+                self._action_priority = Priority.IDLE
             self.update()
             return
-        self._random_reaction_remaining -= elapsed
-        if not self._movement_paused:
+        if self.autonomous_active and not self._manual_movement:
+            self._behavior.advance(elapsed, idle=not self._walking)
+            if not self._walking and not self._bubble.isVisible():
+                name = self._behavior.choose_action(self._sprites.frames)
+                if name == "idle":
+                    self._remaining = max(self._remaining, random.uniform(*IDLE_SECONDS) * self._behavior.interval_scale)
+                elif name in ("sitting", "sleeping", "waving"):
+                    if self.perform_action(name, automatic=True):
+                        return
+                elif name not in (None, "idle"):
+                    if self.trigger_random_reaction(automatic=True, name=name):
+                        return
+        if self._follow_cursor and self.autonomous_active and not self._manual_movement:
+            # Stay on the current monitor; only follow horizontally, with a
+            # dead zone so hovering near the character does not cause jitter.
+            dx = QCursor.pos().x() - self.geometry().center().x()
+            if abs(dx) > self.width() / 2 + 24:
+                if not self._walking:
+                    self._start_walk()
+                self._direction = 1 if dx > 0 else -1
+                self._remaining = 1.0
+            elif self._walking:
+                self._start_idle()
+        if not self._movement_paused and (self.autonomous_active or self._manual_movement):
             self._remaining -= elapsed
-        if self._remaining <= 0 and not self._movement_paused:
+        if (self._remaining <= 0 and not self._movement_paused
+                and (self._manual_movement or (self.autonomous_active and not self._follow_cursor))):
             if self._walking:
                 self._start_idle()
             else:
-                self._start_walk()
+                self._start_walk(running=self._behavior.choose_motion(self._sprites.frames) == "running")
 
         if self._walking and not self._movement_paused and area is not None:
             left = area.left()
             right = max(left, area.right() + 1 - self.width())
-            self._walk_x += self._direction * WALK_SPEED * elapsed
+            self._walk_x += self._direction * (RUN_SPEED if self._running else WALK_SPEED) * elapsed
             if self._walk_x <= left:
                 self._walk_x = float(left)
                 self._direction = 1
@@ -443,17 +689,16 @@ class CharacterWindow(QWidget):
         # Ease to neutral when walking starts instead of snapping vertically.
         self._bob_offset += (target_bob - self._bob_offset) * (1 - math.exp(-12 * elapsed))
         self._sprites.advance(elapsed)
-        if self._random_reaction_remaining <= 0 and not self._walking:
-            self.trigger_random_reaction(automatic=True)
         if self._bubble.isVisible() and area is not None:
             self._bubble.place_near(self.geometry(), area)
         self.update()
 
     def show_expression(self, name: str, duration: float = 1.2) -> bool:
-        if self._dialog_open or self._drag_offset is not None or self._menu.isVisible():
+        if name not in self._sprites.frames or not self._prepare_action(Priority.REACTION):
             return False
         shown = self._sprites.show_expression(name, duration)
         if shown:
+            self._action_priority = Priority.REACTION
             self.update()
         return shown
 
@@ -474,6 +719,7 @@ class CharacterWindow(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
+            self._behavior.reset()
             self._press_position = event.globalPosition().toPoint()
             self._dragging = False
             self._drag_offset = event.globalPosition().toPoint() - self.pos()
@@ -488,7 +734,8 @@ class CharacterWindow(QWidget):
             if not self._dragging and (position - self._press_position).manhattanLength() >= QApplication.startDragDistance():
                 self._dragging = True
                 self._cancel_reaction()
-                self._sprites.end_dance()
+                self._sprites.cancel_overrides()
+                self._action_priority = Priority.IDLE
                 self._start_idle()
                 self.update()
             if self._dragging:
@@ -508,6 +755,8 @@ class CharacterWindow(QWidget):
             if dragged:
                 self._cancel_reaction()
                 self._resume_behavior()
+            elif self.animation_state == AnimationState.SLEEPING:
+                self.return_to_idle()
             else:
                 self.trigger_random_reaction()
                 self._clock.restart()
@@ -534,6 +783,9 @@ class CharacterWindow(QWidget):
             self._generator.reject()
         self._timer.stop()
         self._cancel_reaction()
-        self._sprites.end_dance()
+        self._sprites.end_action()
+        self._tray.hide()
         self._bubble.close()
         super().closeEvent(event)
+        if self._quit_from_tray:
+            QApplication.instance().quit()

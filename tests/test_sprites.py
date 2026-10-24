@@ -53,7 +53,7 @@ class SpriteAnimationTests(unittest.TestCase):
             player.advance(0.125)
         self.assertEqual(colors, ['#ff0000', '#008000', '#0000ff', '#ff0000'])
 
-    def test_missing_insufficient_and_invalid_frames_use_static(self):
+    def test_invalid_frames_are_skipped_and_single_walk_holds_a_pose(self):
         path = self.frame('walk', 'walk_1.png')
         (path.parent / 'walk_2.png').write_bytes(b'invalid image')
         self.frame('walk', 'walk_3.png', body=QRect())  # Fully transparent.
@@ -62,7 +62,7 @@ class SpriteAnimationTests(unittest.TestCase):
         self.assertEqual(player.frame_key, ('static', 0))
         player.set_walking(True)
         player.advance(1)
-        self.assertEqual(player.frame_key, ('static', 0))
+        self.assertEqual(player.frame_key, ('walk', 0))
         self.assertEqual(player.frames['static'][0].toImage(), self.fallback.toImage())
         player.set_walking(False)
         self.assertFalse(player.show_expression('happy'))
@@ -92,7 +92,7 @@ class SpriteAnimationTests(unittest.TestCase):
         self.assertTrue(player.show_expression('blink', 0.22))
         player.set_walking(True)
         self.assertEqual(player.state, 'walk')
-        self.assertEqual(player.frame_key, ('static', 0))
+        self.assertEqual(player.frame_key, ('idle', 0))
         self.assertFalse(player.show_expression('blink'))
         player.set_walking(False)
         self.assertEqual(player.frame_key, ('idle', 0))
@@ -177,20 +177,20 @@ class SpriteAnimationTests(unittest.TestCase):
         self.assertEqual(player.frame_key, ('idle', 0))
         self.assertEqual(player.animation_state, AnimationState.IDLE)
 
-    def test_motion_requires_at_least_two_distinct_readable_poses(self):
+    def test_single_and_duplicate_motion_frames_are_static_poses(self):
         player = self.player()
         self.assertFalse(player.can_dance)
         self.assertFalse(player.begin_dance())
         for state in ('dance', 'walk'):
             first = self.frame(state, f'{state}_01.png')
-            self.assertNotIn(state, self.player().frames)
+            self.assertEqual(len(self.player().frames[state]), 1)
             self.frame(state, f'{state}_02.png')  # Duplicate pose is not a cycle.
-            self.assertNotIn(state, self.player().frames)
+            self.assertEqual(len(self.player().frames[state]), 1)
             self.frame(state, f'{state}_03.png', body=QRect())
             (first.parent / f'{state}_04.png').write_bytes(b'broken')
             with self.assertLogs('app.sprites', level='WARNING'):
                 player = self.player()
-            self.assertNotIn(state, player.frames)
+            self.assertEqual(len(player.frames[state]), 1)
             (first.parent / f'{state}_04.png').unlink()
             self.frame(state, f'{state}_02.png', 'blue')
             self.assertEqual(len(self.player().frames[state]), 2)

@@ -34,6 +34,10 @@ class CharacterWindowTests(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+        for widget in self.app.topLevelWidgets():
+            widget.close()
+            widget.deleteLater()
+        self.app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.temp.cleanup()
 
     def test_idle_bobs_inside_a_stationary_window(self):

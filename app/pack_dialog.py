@@ -14,7 +14,7 @@ class PackDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Import Animation Pack")
         self.character = character
-        self.fallback_description = "Missing or insufficient actions use the static PNG/dialogue."
+        self.fallback_description = "Missing actions use idle or the character PNG/dialogue. One frame holds a static pose."
         self.staging = None
         self.player = None
         self.setMinimumWidth(430)
@@ -34,7 +34,7 @@ class PackDialog(QDialog):
         self.actions.currentTextChanged.connect(self.select_action)
         layout.addWidget(self.actions)
         speed = QHBoxLayout()
-        speed.addWidget(QLabel("Walking / dancing FPS:"))
+        speed.addWidget(QLabel("Action animation FPS:"))
         self.fps = QSpinBox()
         self.fps.setRange(8, 12)
         self.fps.setValue(8)
@@ -73,7 +73,7 @@ class PackDialog(QDialog):
             player = SpriteAnimation(Path(candidate.name), self.character, QSize(220, 220), self.fps.value())
             available = [name for name in ACTIONS if name in player.frames]
             if not available:
-                raise ValueError("No usable actions. Walking and dancing each need at least two different poses.")
+                raise ValueError("No usable actions. Add a readable PNG inside an action folder.")
         except (OSError, ValueError) as error:
             candidate.cleanup()
             self.status.setText(str(error))
@@ -91,8 +91,7 @@ class PackDialog(QDialog):
         missing = [name for name in ACTIONS if name not in available]
         self.status.setText("Available: " + ", ".join(f"{name} ({counts[name]})" for name in available)
                             + ".\nUnavailable in pack: " + (", ".join(missing) or "none")
-                            + ". " + self.fallback_description
-                            + " Walking and dancing require two different poses.")
+                            + ". " + self.fallback_description)
         self.apply.setEnabled(True)
         self.clock.restart()
         self.timer.start()
@@ -105,12 +104,10 @@ class PackDialog(QDialog):
         if not self.player:
             return
         self.player.end_reaction()
-        self.player.end_dance()
-        self.player.set_walking(name == "walk")
-        if name == "dance":
-            self.player.begin_dance()
-        elif name not in ("idle", "walk"):
-            self.player.show_expression(name, 0.22 if name == "blink" else 1.5)
+        self.player.end_action()
+        self.player.set_walking(name in ("walk", "running"), running=name == "running")
+        if name not in ("idle", "walk", "running"):
+            self.player.begin_action(name, 3600)
         self.preview.setPixmap(self.player.pixmap(1))
 
     def tick(self):
