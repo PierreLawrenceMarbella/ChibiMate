@@ -19,6 +19,7 @@ REACTION_INTERVAL = (20.0, 45.0)
 SIT_AFTER_SECONDS = 30.0
 SIT_IDLE_SECONDS = 12.0
 SLEEP_INTERVAL = (90.0, 150.0)
+EDGE_INTERVAL = (45.0, 90.0)
 REACTION_WEIGHTS = {"idle": 2, "waving": 3, "happy": 3, "shy": 2, "surprised": 1}
 
 
@@ -40,13 +41,14 @@ class BehaviorController:
         self.idle_seconds = 0.0
         self.remaining = self.random.uniform(*REACTION_INTERVAL) * self.interval_scale
         self.sleep_after = self.random.uniform(*SLEEP_INTERVAL) * self.interval_scale
+        self.edge_remaining = self.random.uniform(*EDGE_INTERVAL) * self.interval_scale
 
     def configure(self, enabled: bool, frequency: str) -> None:
         self.enabled = enabled
         self.frequency = frequency
         self.reset()
 
-    def advance(self, elapsed: float, idle: bool) -> None:
+    def advance(self, elapsed: float, idle: bool, edges: bool = False) -> None:
         if not self.enabled:
             return
         self.quiet_seconds += elapsed
@@ -54,6 +56,15 @@ class BehaviorController:
             self.idle_seconds += elapsed
         # A pending decision is a single deadline, never an accumulating queue.
         self.remaining = max(0.0, self.remaining - elapsed)
+        if edges:
+            self.edge_remaining = max(0.0, self.edge_remaining - elapsed)
+
+    def choose_edge_action(self, available) -> str | None:
+        if not self.enabled or self.edge_remaining > 0:
+            return None
+        self.edge_remaining = self.random.uniform(*EDGE_INTERVAL) * self.interval_scale
+        choices = [name for name in ("peeking", "sitting") if name in available]
+        return self.random.choice(choices) if choices else None
 
     def choose_action(self, available) -> str | None:
         if not self.enabled:

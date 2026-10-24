@@ -156,7 +156,12 @@ class ActionTests(unittest.TestCase):
         window._direction = 1
         before = window.x()
         window._advance(0.1)
-        self.assertEqual(window.x() - before, round(RUN_SPEED * 0.1))
+        self.assertGreater(window.x() - before, 0)
+        self.assertLess(window.x() - before, RUN_SPEED * 0.1)
+        window._advance(0.5)
+        before = window.x()
+        window._advance(0.1)
+        self.assertAlmostEqual(window.x() - before, RUN_SPEED * 0.1, delta=1)
         window._start_idle()
         self.assertTrue(window.perform_action("sitting"))
         self.assertEqual(window.animation_state, AnimationState.SITTING)

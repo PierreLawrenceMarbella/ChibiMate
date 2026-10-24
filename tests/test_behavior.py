@@ -220,7 +220,7 @@ class BehaviorWindowTests(unittest.TestCase):
             self.assertFalse(reopened.autonomous_active)
             self.assertTrue(reopened._frequency_actions["Low"].isChecked())
             self.assertEqual(reopened._pause_action.text(), "Resume Movement")
-            self.assertEqual(reopened._autonomy_action.text(), "Enable Autonomous Behavior")
+            self.assertEqual(reopened._autonomy_action.text(), "Resume Autonomous Behavior")
         finally:
             reopened.close()
             reopened.deleteLater()

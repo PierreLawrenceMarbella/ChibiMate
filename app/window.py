@@ -5,7 +5,7 @@ import math
 import random
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QPoint, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import (
     QActionGroup,
     QCursor,
@@ -28,6 +28,9 @@ from app.behavior import BehaviorController, FREQUENCIES, Priority
 from app.sprites import AnimationState, DANCE_SECONDS, SPRITE_PATH, SpriteAnimation
 from app.preferences import CHARACTER_HEIGHTS, MIN_HEIGHT, MAX_HEIGHT, CharacterPreferences
 from app.actions import ACTIONS, ACTION_LABELS, normalize_action
+from app.movement import (
+    CURSOR_SAMPLE_SECONDS, EDGE_MARGIN, FOLLOW_GAP, FOLLOW_HYSTERESIS, clamp_position, step_towards,
+)
 
 
 CHARACTER_PATH = Path(__file__).resolve().parent.parent / "assets" / "alya.png"
@@ -61,6 +64,13 @@ class CharacterWindow(QWidget):
         self._action_priority = Priority.IDLE
         self._bubble_priority = Priority.IDLE
         self._manual_movement = False
+        self._following = False
+        self._follow_target: QPointF | None = None
+        self._cursor_sample_remaining = 0.0
+        self._velocity = QPointF()
+        self._edge_action: str | None = None
+        self._edge_priority = Priority.IDLE
+        self._edge_side = -1
         self._reaction_remaining = 0.0
         self._reaction_random = random.Random()
         self._dialog_open = False
@@ -70,6 +80,7 @@ class CharacterWindow(QWidget):
         self._preferences = preferences if preferences is not None else CharacterPreferences()
         enabled, frequency, self._movement_paused = self._preferences.behavior_options
         self._behavior = BehaviorController(enabled, frequency)
+        self._edge_behaviors = self._preferences.edge_behaviors
         self._opacity, self._always_on_top, self._follow_cursor = self._preferences.display_options
         self.setWindowOpacity(self._opacity / 100)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._always_on_top)
@@ -114,6 +125,10 @@ class CharacterWindow(QWidget):
         self._menu.addSeparator()
         self._pause_action = self._menu.addAction("Pause Movement", self._toggle_movement)
         self._autonomy_action = self._menu.addAction("Disable Autonomous Behavior", self._toggle_autonomy)
+        self._follow_action = self._menu.addAction("Follow Cursor", self._toggle_follow)
+        self._edge_toggle = self._menu.addAction("Screen-Edge Behaviors")
+        self._edge_toggle.setCheckable(True)
+        self._edge_toggle.triggered.connect(self.set_edge_behaviors)
         frequency_menu = self._menu.addMenu("Behavior Frequency")
         self._frequency_group = QActionGroup(self)
         self._frequency_group.setExclusive(True)
@@ -131,9 +146,15 @@ class CharacterWindow(QWidget):
         self._pet_action = self._menu.addAction("Pet / Trigger Happy", lambda: self.trigger_random_reaction(name="happy", explicit=True))
         self._sit_action = self._menu.addAction("Sit", lambda: self.perform_action("sitting"))
         self._sleep_action = self._menu.addAction("Sleep", lambda: self.perform_action("sleeping"))
+        self._wave_action = self._menu.addAction("Wave", lambda: self.perform_action("waving"))
+        self._peek_action = self._menu.addAction("Peek", lambda: self.approach_edge("peeking"))
         actions_menu = self._menu.addMenu("Actions")
-        self._action_controls = {}
+        self._action_controls = {"sitting": self._sit_action, "sleeping": self._sleep_action,
+                                 "waving": self._wave_action, "peeking": self._peek_action,
+                                 "dance": self._dance_action}
         for name in ACTIONS:
+            if name in self._action_controls or name in ("idle", "happy"):
+                continue  # Already exposed directly through the menu or Pet/Wake Up.
             action = actions_menu.addAction(ACTION_LABELS[name])
             action.triggered.connect(lambda checked=False, name=name: self.perform_action(name))
             self._action_controls[name] = action
@@ -193,6 +214,9 @@ class CharacterWindow(QWidget):
         self.move(anchor.x() - self.width() // 2, anchor.y() - self.height())
         area = self._keep_on_screen()
         self._walk_x = float(self.x())
+        self._walk_y = float(self.y())
+        self._velocity = QPointF()
+        self._cursor_sample_remaining = 0.0
         if self._bubble.isVisible() and area is not None:
             self._bubble.place_near(self.geometry(), area)
         self.update()
@@ -268,14 +292,21 @@ class CharacterWindow(QWidget):
             self._clock.restart()
             dialog.deleteLater()
 
-    def set_display_options(self, opacity: int, top: bool, follow: bool) -> None:
+    def set_display_options(self, opacity: int, top: bool, follow: bool) -> bool:
         opacity = max(20, min(100, opacity))
         try:
             self._preferences.save_display_options(opacity, top, follow)
         except OSError as error:
             self._show_character_error(error)
-            return
+            return False
+        changed_follow = follow != self._follow_cursor
         self._opacity, self._follow_cursor = opacity, follow
+        if changed_follow:
+            # Cancel a target journey, but preserve an explicit pose or sleep.
+            if not self._manual_movement and not self._sprites.action_active:
+                self._start_idle()
+            self._follow_target = None
+            self._cursor_sample_remaining = 0.0
         self.setWindowOpacity(opacity / 100)
         if top != self._always_on_top:
             visible = self.isVisible()
@@ -286,6 +317,29 @@ class CharacterWindow(QWidget):
             if visible:
                 self.show()
             self._keep_on_screen()
+        self._update_menu()
+        return True
+
+    def _toggle_follow(self) -> None:
+        self.set_display_options(self._opacity, self._always_on_top, not self._follow_cursor)
+
+    def set_edge_behaviors(self, enabled: bool) -> None:
+        try:
+            self._preferences.save_edge_behaviors(enabled)
+        except OSError as error:
+            self._show_character_error(error)
+            self._update_menu()
+            return
+        self._edge_behaviors = enabled
+        self._behavior.reset()
+        if not enabled and self._edge_action and self._edge_priority == Priority.AUTONOMOUS:
+            self._start_idle()
+        self._update_menu()
+
+    def resume_autonomous(self) -> None:
+        if self.set_display_options(self._opacity, self._always_on_top, False):
+            if self.set_behavior_options(enabled=True, paused=False):
+                self.return_to_idle()
 
     def hide_companion(self) -> None:
         if not QSystemTrayIcon.isSystemTrayAvailable():
@@ -400,6 +454,12 @@ class CharacterWindow(QWidget):
     def _keep_on_screen(self) -> QRect | None:
         area = self._available_area()
         if area is not None:
+            if self.width() > area.width() or self.height() > area.height():
+                # A drag or monitor change can put a large character on a smaller
+                # work area. Refit cached art while retaining the preferred size.
+                self._sprites.set_max_size(self._display_limit())
+                self._character_size = self._sprites.size
+                self.setFixedSize(self._character_size.width(), self._character_size.height() + 2 * BOB_PADDING)
             position = QPoint(
                 max(area.left(), min(self.x(), area.right() + 1 - self.width())),
                 max(area.top(), min(self.y(), area.bottom() + 1 - self.height())),
@@ -407,6 +467,8 @@ class CharacterWindow(QWidget):
             if position != self.pos():
                 self.move(position)
                 self._walk_x = float(position.x())
+                self._walk_y = float(position.y())
+                self._velocity = QPointF()
         return area
 
     def _start_idle(self) -> None:
@@ -417,6 +479,12 @@ class CharacterWindow(QWidget):
         self._remaining = random.uniform(*IDLE_SECONDS) * self._behavior.interval_scale
         self._idle_phase = 0.0
         self._walk_x = float(self.x())
+        self._walk_y = float(self.y())
+        self._velocity = QPointF()
+        self._following = False
+        self._follow_target = None
+        self._edge_action = None
+        self._edge_priority = Priority.IDLE
 
     def _start_walk(self, running: bool = False, manual: bool = False) -> None:
         self._walking = True
@@ -426,6 +494,8 @@ class CharacterWindow(QWidget):
         self._direction = random.choice((-1, 1))
         self._remaining = random.uniform(*WALK_SECONDS)
         self._walk_x = float(self.x())
+        self._walk_y = float(self.y())
+        self._velocity = QPointF()
 
     def _resume_behavior(self) -> None:
         self._keep_on_screen()
@@ -443,7 +513,11 @@ class CharacterWindow(QWidget):
         for height, action in self._size_actions.items():
             action.setChecked(height == self._character_height)
         self._pause_action.setText("Resume Movement" if self._movement_paused else "Pause Movement")
-        self._autonomy_action.setText("Disable Autonomous Behavior" if self._behavior.enabled else "Enable Autonomous Behavior")
+        self._autonomy_action.setText("Resume Autonomous Behavior" if (
+            not self._behavior.enabled or self._follow_cursor or self._movement_paused
+            or self.behavior_priority == Priority.MANUAL) else "Disable Autonomous Behavior")
+        self._follow_action.setText("Stop Following" if self._follow_cursor else "Follow Cursor")
+        self._edge_toggle.setChecked(self._edge_behaviors)
         for name, action in self._frequency_actions.items():
             action.setChecked(name == self._behavior.frequency)
         # Explicit controls can replace lower-priority automatic poses/reactions.
@@ -456,9 +530,11 @@ class CharacterWindow(QWidget):
         self._sleep_action.setEnabled(available and "sleeping" in self._sprites.frames)
         for name, action in self._action_controls.items():
             action.setEnabled(available and (name == "idle" or name in self._sprites.frames)
-                              and not (self._movement_paused and name in ("walk", "running")))
+                              and not (self._movement_paused and name in ("walk", "running", "peeking")))
             count = len(self._sprites.frames.get(name, []))
-            action.setText(ACTION_LABELS[name] + (" (static pose)" if count == 1 else ""))
+            label = {"dance": "Dance", "sitting": "Sit", "sleeping": "Sleep",
+                     "waving": "Wave", "peeking": "Peek"}.get(name, ACTION_LABELS[name])
+            action.setText(label + (" (static pose)" if count == 1 else ""))
         self._hide_action.setEnabled(QSystemTrayIcon.isSystemTrayAvailable())
 
     @property
@@ -477,6 +553,8 @@ class CharacterWindow(QWidget):
             return Priority.DRAGGING
         if self._sprites.action_active or self.animation_state == AnimationState.REACTING:
             return self._action_priority
+        if self._edge_action:
+            return self._edge_priority
         if self._walking:
             return Priority.MANUAL if self._manual_movement else Priority.AUTONOMOUS
         return Priority.IDLE
@@ -496,6 +574,8 @@ class CharacterWindow(QWidget):
                 return False
             if self._bubble.isVisible() and self._bubble_priority >= priority:
                 return False
+        if self._following or self._edge_action:
+            self._start_idle()
         # User commands replace automatic actions, without ever stacking poses.
         if (self._sprites.action_active or self.animation_state == AnimationState.REACTING
                 or self._bubble.isVisible()):
@@ -544,10 +624,13 @@ class CharacterWindow(QWidget):
         self.set_behavior_options(paused=not self._movement_paused)
 
     def _toggle_autonomy(self) -> None:
-        self.set_behavior_options(enabled=not self._behavior.enabled)
+        if not self._behavior.enabled or self._follow_cursor or self._movement_paused or self.behavior_priority == Priority.MANUAL:
+            self.resume_autonomous()
+        else:
+            self.set_behavior_options(enabled=False)
 
     def set_behavior_options(self, enabled: bool | None = None, frequency: str | None = None,
-                             paused: bool | None = None) -> None:
+                             paused: bool | None = None) -> bool:
         enabled = self._behavior.enabled if enabled is None else enabled
         frequency = self._behavior.frequency if frequency is None else frequency
         paused = self._movement_paused if paused is None else paused
@@ -555,7 +638,7 @@ class CharacterWindow(QWidget):
             self._preferences.save_behavior_options(enabled, frequency, paused)
         except (OSError, ValueError) as error:
             self._show_character_error(error)
-            return
+            return False
         changed = enabled != self._behavior.enabled or frequency != self._behavior.frequency
         self._movement_paused = paused
         if changed:
@@ -568,6 +651,7 @@ class CharacterWindow(QWidget):
             self._action_priority = Priority.IDLE
         self._clock.restart()
         self._update_menu()
+        return True
 
     def trigger_random_reaction(self, automatic: bool = False, name: str | None = None, explicit: bool = False) -> bool:
         if automatic and self._walking:
@@ -609,6 +693,93 @@ class CharacterWindow(QWidget):
             return
         self._advance(elapsed)
 
+    def _move_towards(self, target: QPointF, speed: float, elapsed: float, area: QRect) -> bool:
+        if QPoint(round(self._walk_x), round(self._walk_y)) != self.pos():
+            self._walk_x, self._walk_y = float(self.x()), float(self.y())
+            self._velocity = QPointF()
+        position = QPointF(self._walk_x, self._walk_y)
+        target = clamp_position(target, area, self.size())
+        position, self._velocity = step_towards(position, self._velocity, target, speed, elapsed)
+        bounded = clamp_position(position, area, self.size())
+        if bounded != position:
+            self._velocity = QPointF()
+        self._walk_x, self._walk_y = bounded.x(), bounded.y()
+        if abs(self._velocity.x()) > 1:
+            self._direction = 1 if self._velocity.x() > 0 else -1
+        self.move(round(self._walk_x), round(self._walk_y))
+        return math.hypot(target.x() - self._walk_x, target.y() - self._walk_y) < 0.5
+
+    def _advance_follow(self, elapsed: float, area: QRect) -> None:
+        self._cursor_sample_remaining -= elapsed
+        if self._cursor_sample_remaining <= 0:
+            self._cursor_sample_remaining = CURSOR_SAMPLE_SECONDS
+            cursor = QPointF(QCursor.pos())
+            half = QPointF(self.width() / 2, self.height() / 2)
+            delta = cursor - (QPointF(self.pos()) + half)
+            distance = math.hypot(delta.x(), delta.y())
+            gap = math.hypot(half.x(), half.y()) + FOLLOW_GAP
+            threshold = gap + (0 if self._following else FOLLOW_HYSTERESIS)
+            if distance <= threshold:
+                self._follow_target = None
+            else:
+                self._follow_target = clamp_position(cursor - delta * (gap / distance) - half, area, self.size())
+        target = self._follow_target
+        if target is None or math.hypot(target.x() - self.x(), target.y() - self.y()) < 1:
+            if self._walking:
+                self._start_idle()
+            return
+        distance = math.hypot(target.x() - self.x(), target.y() - self.y())
+        running = "running" in self._sprites.frames and distance > (160 if self._running else 240)
+        if not self._following:
+            self._start_walk(running=running)
+            self._following = True
+        elif running != self._running:
+            self._running = running
+            self._sprites.set_walking(True, running)
+        if abs(target.x() - self.x()) > 1 and self._velocity.isNull():
+            self._direction = 1 if target.x() > self.x() else -1
+        if self._move_towards(target, RUN_SPEED if running else WALK_SPEED, elapsed, area):
+            self._start_idle()
+
+    def approach_edge(self, name: str = "peeking", automatic: bool = False) -> bool:
+        name = normalize_action(name)
+        area = self._available_area()
+        if name not in ("peeking", "sitting") or name not in self._sprites.frames or area is None or self._movement_paused:
+            return False
+        priority = Priority.AUTONOMOUS if automatic else Priority.MANUAL
+        if not self._prepare_action(priority):
+            return False
+        self._start_idle()
+        self._start_walk(manual=not automatic)
+        self._edge_action = name
+        self._edge_priority = priority
+        self._edge_side = -1 if self.geometry().center().x() <= area.center().x() else 1
+        self._direction = self._edge_side
+        self._clock.restart()
+        return True
+
+    def _advance_edge(self, elapsed: float, area: QRect) -> None:
+        right = max(area.left(), area.right() + 1 - self.width())
+        margin = min(EDGE_MARGIN, (right - area.left()) / 2)
+        target_x = area.left() + margin if self._edge_side < 0 else right - margin
+        target = QPointF(target_x, self.y())
+        if self._move_towards(target, WALK_SPEED, elapsed, area):
+            name, priority = self._edge_action, self._edge_priority
+            self._start_idle()
+            # The approach and pose are one action with the same ownership.
+            self.perform_action(name, automatic=priority == Priority.AUTONOMOUS)
+
+    def _animate_motion(self, elapsed: float, area: QRect | None) -> None:
+        target_bob = 0.0
+        if not self._walking:
+            self._idle_phase = (self._idle_phase + elapsed) % BOB_PERIOD
+            target_bob = BOB_AMPLITUDE * math.sin(math.tau * self._idle_phase / BOB_PERIOD)
+        self._bob_offset += (target_bob - self._bob_offset) * (1 - math.exp(-12 * elapsed))
+        self._sprites.advance(elapsed)
+        if self._bubble.isVisible() and area is not None:
+            self._bubble.place_near(self.geometry(), area)
+        self.update()
+
     def _advance(self, elapsed: float) -> None:
         if self._drag_offset is not None:
             return
@@ -638,8 +809,18 @@ class CharacterWindow(QWidget):
                 self._action_priority = Priority.IDLE
             self.update()
             return
+        if self._edge_action:
+            if not self._movement_paused and area is not None:
+                self._advance_edge(elapsed, area)
+                self._animate_motion(elapsed, area)
+            return
+        if self._follow_cursor and not self._manual_movement:
+            if not self._movement_paused and area is not None:
+                self._advance_follow(elapsed, area)
+            self._animate_motion(elapsed, area)
+            return
         if self.autonomous_active and not self._manual_movement:
-            self._behavior.advance(elapsed, idle=not self._walking)
+            self._behavior.advance(elapsed, idle=not self._walking, edges=self._edge_behaviors)
             if not self._walking and not self._bubble.isVisible():
                 name = self._behavior.choose_action(self._sprites.frames)
                 if name == "idle":
@@ -650,17 +831,10 @@ class CharacterWindow(QWidget):
                 elif name not in (None, "idle"):
                     if self.trigger_random_reaction(automatic=True, name=name):
                         return
-        if self._follow_cursor and self.autonomous_active and not self._manual_movement:
-            # Stay on the current monitor; only follow horizontally, with a
-            # dead zone so hovering near the character does not cause jitter.
-            dx = QCursor.pos().x() - self.geometry().center().x()
-            if abs(dx) > self.width() / 2 + 24:
-                if not self._walking:
-                    self._start_walk()
-                self._direction = 1 if dx > 0 else -1
-                self._remaining = 1.0
-            elif self._walking:
-                self._start_idle()
+                if self._edge_behaviors:
+                    edge = self._behavior.choose_edge_action(self._sprites.frames)
+                    if edge and self.approach_edge(edge, automatic=True):
+                        return
         if not self._movement_paused and (self.autonomous_active or self._manual_movement):
             self._remaining -= elapsed
         if (self._remaining <= 0 and not self._movement_paused
@@ -673,25 +847,15 @@ class CharacterWindow(QWidget):
         if self._walking and not self._movement_paused and area is not None:
             left = area.left()
             right = max(left, area.right() + 1 - self.width())
-            self._walk_x += self._direction * (RUN_SPEED if self._running else WALK_SPEED) * elapsed
-            if self._walk_x <= left:
-                self._walk_x = float(left)
+            direction = self._direction
+            target = QPointF(right if direction > 0 else left, self.y())
+            speed = (RUN_SPEED if self._running else WALK_SPEED) * min(1, max(0, self._remaining / 0.35))
+            reached = self._move_towards(target, speed, elapsed, area)
+            if reached and direction < 0:
                 self._direction = 1
-            elif self._walk_x >= right:
-                self._walk_x = float(right)
+            elif reached:
                 self._direction = -1
-            self.move(round(self._walk_x), self.y())
-
-        target_bob = 0.0
-        if not self._walking:
-            self._idle_phase = (self._idle_phase + elapsed) % BOB_PERIOD
-            target_bob = BOB_AMPLITUDE * math.sin(math.tau * self._idle_phase / BOB_PERIOD)
-        # Ease to neutral when walking starts instead of snapping vertically.
-        self._bob_offset += (target_bob - self._bob_offset) * (1 - math.exp(-12 * elapsed))
-        self._sprites.advance(elapsed)
-        if self._bubble.isVisible() and area is not None:
-            self._bubble.place_near(self.geometry(), area)
-        self.update()
+        self._animate_motion(elapsed, area)
 
     def show_expression(self, name: str, duration: float = 1.2) -> bool:
         if name not in self._sprites.frames or not self._prepare_action(Priority.REACTION):

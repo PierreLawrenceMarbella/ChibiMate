@@ -42,7 +42,7 @@ class CharacterSettingsDialog(QDialog):
         layout.addWidget(self.transparency)
         self.on_top = QCheckBox("Always on top")
         self.on_top.setChecked(companion._always_on_top)
-        self.follow = QCheckBox("Follow cursor horizontally")
+        self.follow = QCheckBox("Follow cursor")
         self.follow.setChecked(companion._follow_cursor)
         layout.addWidget(self.on_top)
         layout.addWidget(self.follow)

@@ -61,6 +61,20 @@ class CharacterPreferences:
             raise OSError("Could not save display preferences.")
 
     @property
+    def edge_behaviors(self) -> bool:
+        return str(self.settings.value("behavior/edges", "false")).lower() == "true"
+
+    def save_edge_behaviors(self, enabled: bool) -> None:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        previous = self.edge_behaviors
+        self.settings.setValue("behavior/edges", enabled)
+        self.settings.sync()
+        if self.settings.status() != QSettings.Status.NoError:
+            self.settings.setValue("behavior/edges", previous)
+            self.settings.sync()
+            raise OSError("Could not save screen-edge preferences.")
+
+    @property
     def behavior_options(self) -> tuple[bool, str, bool]:
         enabled = str(self.settings.value("behavior/enabled", "true")).lower() != "false"
         frequency = self.settings.value("behavior/frequency", "Normal")

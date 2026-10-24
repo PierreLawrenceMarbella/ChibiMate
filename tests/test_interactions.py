@@ -221,7 +221,7 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(window._sprites.frame_key[0], 'walk')
         # A lingering bubble still prevents stacking another reaction.
         self.assertFalse(window.trigger_random_reaction())
-        window._advance(0.05)
+        window._advance(0.15)  # Allow eased movement to cover a visible pixel.
         self.assertNotEqual(window.pos(), before)
 
     def test_missing_shy_sprite_keeps_exact_current_image(self):

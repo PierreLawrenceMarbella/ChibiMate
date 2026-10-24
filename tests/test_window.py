@@ -60,6 +60,7 @@ class CharacterWindowTests(unittest.TestCase):
         area = window._available_area()
         start = QPoint(area.center().x() - window.width() // 2, area.top() + 30)
         for direction in (-1, 1):
+            distances = []
             for interval in (0.01, 0.025):
                 window.move(start)
                 window._start_walk()
@@ -67,7 +68,15 @@ class CharacterWindowTests(unittest.TestCase):
                 window._remaining = 5
                 for _ in range(round(1 / interval)):
                     window._advance(interval)
-                self.assertEqual(window.pos(), start + QPoint(round(direction * WALK_SPEED), 0))
+                distance = abs(window.x() - start.x())
+                distances.append(distance)
+                self.assertGreater(distance, WALK_SPEED * 0.8)
+                self.assertLess(distance, WALK_SPEED)  # Smooth initial acceleration.
+                steady_start = window.x()
+                for _ in range(round(1 / interval)):
+                    window._advance(interval)
+                self.assertAlmostEqual(abs(window.x() - steady_start), WALK_SPEED, delta=1)
+            self.assertAlmostEqual(distances[0], distances[1], delta=1)
 
     def test_random_idle_and_walk_periods_alternate(self):
         window = self.window

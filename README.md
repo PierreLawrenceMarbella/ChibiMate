@@ -116,7 +116,7 @@ poses are disabled; a single image is labeled as a static pose.
 Action durations are in `app/actions.py`.
 
 **Character Settings** offers PNG selection, a 75-300px size slider, transparency,
-always-on-top, and horizontal cursor following. These settings persist locally.
+always-on-top, and cursor following. These settings persist locally.
 **Hide** pauses the companion; use its system-tray icon to show it again or exit.
 Hide is disabled when no system tray is available. All actions and pack imports
 work offline. Custom characters use only their own frames or static PNG.
@@ -132,3 +132,18 @@ without companion interaction; click or choose **Return to Idle / Wake Up** to w
 Sleep stays stationary until awakened. Missing action sprites are skipped; static
 characters retain walking movement, idle bobbing, and manual dialogue reactions.
 Intervals and selection weights are configurable in `app/behavior.py`.
+
+Phase 8B adds **Follow Cursor / Stop Following** (off by default), with smooth
+movement, a comfortable cursor gap, and walking/running sprites when available.
+Following works independently of random autonomy; pause, sleep, manual poses, and
+dragging take priority. Cursor sampling stops when following is off or suspended.
+**Resume Autonomous Behavior** stops following, wakes the character, and resumes
+random behavior. **Screen-Edge Behaviors** optionally enables occasional safe
+approaches for supplied peek/sit poses. **Peek** manually approaches the nearest
+side; **Wave**, **Sit**, **Sleep**, and **Dance** use their existing sprites.
+Missing poses are disabled. Edge and follow preferences persist locally.
+
+Following and edge approaches stay within the current monitor's available area,
+including taskbar boundaries; drag the character to change monitors. Peeking is
+a fully visible pose near the edge, without hiding behind windows or crossing
+monitor gaps. Movement tuning is in `app/movement.py`; no extra timers or APIs are used.
