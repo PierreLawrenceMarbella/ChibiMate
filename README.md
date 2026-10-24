@@ -115,8 +115,14 @@ Happy**, **Sit**, **Dance**, **Sleep**, or **Return to Idle / Wake Up**. Missing
 poses are disabled; a single image is labeled as a static pose.
 Action durations are in `app/actions.py`.
 
-**Character Settings** offers PNG selection, a 75-300px size slider, transparency,
-always-on-top, and cursor following. These settings persist locally.
+**Character Settings** groups live controls into General, Character, Behaviors,
+and Animations tabs with a full-character transparency preview. Size (75-300px),
+opacity, always-on-top, behavior, and playback preferences persist locally.
+Playback speed scales looping frames; walking FPS can override the pack default.
+The action list distinguishes animated frames, static poses, and missing assets.
+**Restore Default Settings** resets controls while keeping your selected character
+and imported packs. The grouped menu keeps extra size/default/AI options under
+**More Customization**, and autonomy/frequency/edge controls under **Behavior Options**.
 **Hide** pauses the companion; use its system-tray icon to show it again or exit.
 Hide is disabled when no system tray is available. All actions and pack imports
 work offline. Custom characters use only their own frames or static PNG.

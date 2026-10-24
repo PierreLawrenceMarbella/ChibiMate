@@ -197,7 +197,7 @@ class ActionTests(unittest.TestCase):
         dialog = CharacterSettingsDialog(window)
         dialog.show()
         dialog.size_slider.setValue(175)
-        dialog.transparency.setValue(35)
+        dialog.opacity_slider.setValue(65)
         dialog.on_top.setChecked(False)
         dialog.follow.setChecked(True)
         self.assertTrue(window.isVisible())

@@ -28,6 +28,7 @@ from app.behavior import BehaviorController, FREQUENCIES, Priority
 from app.sprites import AnimationState, DANCE_SECONDS, SPRITE_PATH, SpriteAnimation
 from app.preferences import CHARACTER_HEIGHTS, MIN_HEIGHT, MAX_HEIGHT, CharacterPreferences
 from app.actions import ACTIONS, ACTION_LABELS, normalize_action
+from app.theme import MENU_STYLE
 from app.movement import (
     CURSOR_SAMPLE_SECONDS, EDGE_MARGIN, FOLLOW_GAP, FOLLOW_HYSTERESIS, clamp_position, step_towards,
 )
@@ -75,6 +76,7 @@ class CharacterWindow(QWidget):
         self._reaction_random = random.Random()
         self._dialog_open = False
         self._generator = None
+        self._settings_dialog = None
         self._exit_after_generator = False
         self._quit_from_tray = False
         self._preferences = preferences if preferences is not None else CharacterPreferences()
@@ -91,12 +93,14 @@ class CharacterWindow(QWidget):
 
         self._character = saved_character if saved_character is not None else self._load_default_character()
         pack_root, pack_fps = self._preferences.pack_for(self._custom_file)
+        self._pack_root = pack_root
         self._sprites = SpriteAnimation(
             pack_root or (None if self._custom_file else sprite_path), self._character, self._display_limit(),
             pack_fps if pack_root is not None else None,
             fallback_root=sprite_path if pack_root is not None and not self._custom_file else None,
         )
         self._character_size = self._sprites.size
+        self._sprites.playback_speed, self._sprites.walking_fps = self._preferences.animation_options
         # Reserve transparent space so bobbing never crops the head or feet.
         self.setFixedSize(
             self._character_size.width(),
@@ -106,8 +110,9 @@ class CharacterWindow(QWidget):
         self._bubble = SpeechBubble(self)
         self._bubble.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, self._always_on_top)
         self._menu = QMenu(self)
-        self._menu.addAction("Change Character", self.change_character)
-        self._menu.addAction("Character Settings", self.open_settings)
+        self._menu.setStyleSheet(MENU_STYLE)
+        change_action = self._menu.addAction("Change Character", self.change_character)
+        settings_action = self._menu.addAction("Character Settings", self.open_settings)
         self._size_menu = self._menu.addMenu("Character Size")
         self._size_group = QActionGroup(self)
         self._size_group.setExclusive(True)
@@ -119,8 +124,8 @@ class CharacterWindow(QWidget):
             action.triggered.connect(lambda checked=False, height=height: self.set_character_size(height))
             self._size_group.addAction(action)
             self._size_actions[height] = action
-        self._menu.addAction("Restore Default Alya", self.restore_default)
-        self._menu.addAction("AI Chibi Generator", self.open_generator)
+        restore_action = self._menu.addAction("Restore Default Alya", self.restore_default)
+        generator_action = self._menu.addAction("AI Chibi Generator", self.open_generator)
         self._pack_action = self._menu.addAction("Import Animation Pack", self.import_animation_pack)
         self._menu.addSeparator()
         self._pause_action = self._menu.addAction("Pause Movement", self._toggle_movement)
@@ -158,13 +163,37 @@ class CharacterWindow(QWidget):
             action = actions_menu.addAction(ACTION_LABELS[name])
             action.triggered.connect(lambda checked=False, name=name: self.perform_action(name))
             self._action_controls[name] = action
-        self._menu.addAction("Return to Idle / Wake Up", self.return_to_idle)
+        wake_action = self._menu.addAction("Return to Idle / Wake Up", self.return_to_idle)
         self._menu.addSeparator()
         self._hide_action = self._menu.addAction("Hide (restore from tray)", self.hide_companion)
-        self._menu.addAction("Exit ChibiMate", self.close)
+        exit_action = self._menu.addAction("Exit ChibiMate", self.close)
+        # Reuse the same QAction objects and callbacks in compact groups.
+        for action in self._menu.actions():
+            self._menu.removeAction(action)
+        self._menu.addSection("Character actions")
+        for action in (self._pet_action, self._sit_action, self._wave_action, self._dance_action,
+                       self._sleep_action, wake_action, self._peek_action, self._reaction_action,
+                       actions_menu.menuAction()):
+            self._menu.addAction(action)
+        self._menu.addSection("Movement")
+        self._menu.addAction(self._pause_action)
+        self._menu.addAction(self._follow_action)
+        behavior_menu = self._menu.addMenu("Behavior Options")
+        for action in (self._autonomy_action, frequency_menu.menuAction(), self._edge_toggle):
+            behavior_menu.addAction(action)
+        self._menu.addSection("Customization")
+        for action in (change_action, self._pack_action, settings_action):
+            self._menu.addAction(action)
+        more = self._menu.addMenu("More Customization")
+        for action in (self._size_menu.menuAction(), restore_action, generator_action):
+            more.addAction(action)
+        self._menu.addSection("Application")
+        self._menu.addAction(self._hide_action)
+        self._menu.addAction(exit_action)
         self._tray = QSystemTrayIcon(QIcon(self._character), self)
         self._tray.setToolTip("ChibiMate — click to show")
         self._tray_menu = QMenu(self)
+        self._tray_menu.setStyleSheet(MENU_STYLE)
         self._tray_menu.addAction("Show ChibiMate", self.show_companion)
         self._tray_menu.addAction("Exit ChibiMate", self._exit_from_tray)
         self._tray.setContextMenu(self._tray_menu)
@@ -231,12 +260,14 @@ class CharacterWindow(QWidget):
         self._character = character
         self._custom_file = filename
         pack_root, pack_fps = self._preferences.pack_for(filename)
+        self._pack_root = pack_root
         self._sprites = SpriteAnimation(
             pack_root or (None if filename else self._default_sprite_path), character, self._display_limit(),
             pack_fps if pack_root is not None else None,
             fallback_root=self._default_sprite_path if pack_root is not None and not filename else None,
         )
         self._bob_offset = 0.0
+        self._sprites.playback_speed, self._sprites.walking_fps = self._preferences.animation_options
         self._resize_character()
         self._start_idle()
         self._clock.restart()
@@ -283,14 +314,46 @@ class CharacterWindow(QWidget):
 
     def open_settings(self) -> None:
         from app.settings_dialog import CharacterSettingsDialog
+        if self._settings_dialog is not None:
+            self._settings_dialog.raise_()
+            self._settings_dialog.activateWindow()
+            return
         dialog = CharacterSettingsDialog(self)
+        self._settings_dialog = dialog
+        was_dialog_open = self._dialog_open
         self._dialog_open = True
         try:
             dialog.exec()
         finally:
-            self._dialog_open = False
+            self._dialog_open = was_dialog_open
+            self._settings_dialog = None
             self._clock.restart()
             dialog.deleteLater()
+
+    def set_animation_options(self, speed: float, fps: int | None) -> None:
+        try:
+            self._preferences.save_animation_options(speed, fps)
+        except (OSError, ValueError) as error:
+            self._show_character_error(error)
+            return
+        self._sprites.playback_speed, self._sprites.walking_fps = speed, fps
+        self.update()
+
+    def restore_settings(self) -> None:
+        try:
+            self._preferences.reset_options()
+        except OSError as error:
+            self._show_character_error(error)
+            return
+        self._character_height = self._preferences.height
+        self._behavior.configure(True, "Normal")
+        self._movement_paused = False
+        self._edge_behaviors = False
+        self._sprites.playback_speed, self._sprites.walking_fps = self._preferences.animation_options
+        self.set_display_options(100, True, False)
+        self._resize_character()
+        self.return_to_idle()
+        self._update_menu()
 
     def set_display_options(self, opacity: int, top: bool, follow: bool) -> bool:
         opacity = max(20, min(100, opacity))
@@ -385,6 +448,7 @@ class CharacterWindow(QWidget):
 
     def import_animation_pack(self) -> None:
         from app.pack_dialog import PackDialog
+        was_dialog_open = self._dialog_open
         filename = self._custom_file
         dialog = PackDialog(self._character, self)
         if not filename:
@@ -404,7 +468,7 @@ class CharacterWindow(QWidget):
         finally:
             dialog.cleanup()
             dialog.deleteLater()
-            self._dialog_open = False
+            self._dialog_open = was_dialog_open
             self._clock.restart()
             self._update_menu()
 

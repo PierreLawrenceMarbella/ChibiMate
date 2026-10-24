@@ -1,6 +1,7 @@
 """Local character preferences and app-owned copies of imported PNGs."""
 
 import logging
+import math
 import hashlib
 import shutil
 import re
@@ -34,11 +35,34 @@ class CharacterPreferences:
         )
         self.settings = QSettings(str(self.directory / "preferences.ini"), QSettings.Format.IniFormat)
 
+    def _bool(self, key: str, default: bool) -> bool:
+        value = str(self.settings.value(key, default)).lower()
+        return {"true": True, "1": True, "false": False, "0": False}.get(value, default)
+
+    def _update(self, values: dict) -> None:
+        """Flush one settings change, restoring in-memory values on failure."""
+        self.directory.mkdir(parents=True, exist_ok=True)
+        previous = {key: self.settings.value(key) for key in values}
+        for key, value in values.items():
+            if value is None:
+                self.settings.remove(key)
+            else:
+                self.settings.setValue(key, value)
+        self.settings.sync()
+        if self.settings.status() != QSettings.Status.NoError:
+            for key, value in previous.items():
+                if value is None:
+                    self.settings.remove(key)
+                else:
+                    self.settings.setValue(key, value)
+            self.settings.sync()
+            raise OSError("Could not save preferences in the application data folder.")
+
     @property
     def height(self) -> int:
         try:
             height = int(self.settings.value("height", 150))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return 150
         return height if MIN_HEIGHT <= height <= MAX_HEIGHT else 150
 
@@ -46,23 +70,44 @@ class CharacterPreferences:
     def display_options(self) -> tuple[int, bool, bool]:
         try:
             opacity = max(20, min(100, int(self.settings.value("opacity", 100))))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             opacity = 100
-        top = str(self.settings.value("always_on_top", "true")).lower() == "true"
-        follow = str(self.settings.value("follow_cursor", "false")).lower() == "true"
+        top = self._bool("always_on_top", True)
+        follow = self._bool("follow_cursor", False)
         return opacity, top, follow
 
     def save_display_options(self, opacity: int, top: bool, follow: bool) -> None:
-        self.directory.mkdir(parents=True, exist_ok=True)
-        for name, value in (("opacity", opacity), ("always_on_top", top), ("follow_cursor", follow)):
-            self.settings.setValue(name, value)
-        self.settings.sync()
-        if self.settings.status() != QSettings.Status.NoError:
-            raise OSError("Could not save display preferences.")
+        self._update({"opacity": max(20, min(100, opacity)), "always_on_top": top, "follow_cursor": follow})
+
+    @property
+    def animation_options(self) -> tuple[float, int | None]:
+        try:
+            speed = float(self.settings.value("animation/speed", 1.0))
+            if not math.isfinite(speed) or not 0.5 <= speed <= 2.0:
+                speed = 1.0
+        except (ValueError, TypeError, OverflowError):
+            speed = 1.0
+        try:
+            fps = int(self.settings.value("animation/walk_fps", 0))
+        except (ValueError, TypeError, OverflowError):
+            fps = 0
+        return speed, fps if 8 <= fps <= 12 else None
+
+    def save_animation_options(self, speed: float, fps: int | None) -> None:
+        if not math.isfinite(speed) or not 0.5 <= speed <= 2.0 or (fps is not None and fps not in range(8, 13)):
+            raise ValueError("Choose a speed from 0.5 to 2 and walking FPS from 8 to 12.")
+        self._update({"animation/speed": speed, "animation/walk_fps": fps})
+
+    def reset_options(self) -> None:
+        """Reset controls while retaining character copies and pack associations."""
+        self._update({"height": 150, "opacity": 100, "always_on_top": True,
+                      "follow_cursor": False, "behavior/enabled": True, "behavior/frequency": "Normal",
+                      "behavior/paused": False, "behavior/edges": False,
+                      "animation/speed": 1.0, "animation/walk_fps": None})
 
     @property
     def edge_behaviors(self) -> bool:
-        return str(self.settings.value("behavior/edges", "false")).lower() == "true"
+        return self._bool("behavior/edges", False)
 
     def save_edge_behaviors(self, enabled: bool) -> None:
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -76,11 +121,11 @@ class CharacterPreferences:
 
     @property
     def behavior_options(self) -> tuple[bool, str, bool]:
-        enabled = str(self.settings.value("behavior/enabled", "true")).lower() != "false"
+        enabled = self._bool("behavior/enabled", True)
         frequency = self.settings.value("behavior/frequency", "Normal")
         if not isinstance(frequency, str) or frequency not in FREQUENCIES:
             frequency = "Normal"
-        paused = str(self.settings.value("behavior/paused", "false")).lower() == "true"
+        paused = self._bool("behavior/paused", False)
         return enabled, frequency, paused
 
     def save_behavior_options(self, enabled: bool, frequency: str, paused: bool) -> None:
@@ -174,7 +219,10 @@ class CharacterPreferences:
         try:
             key = self._pack_key(filename)
             name = self.settings.value(key + "/folder", "")
-            fps = int(self.settings.value(key + "/fps", 8))
+            try:
+                fps = int(self.settings.value(key + "/fps", 8))
+            except (TypeError, ValueError, OverflowError):
+                fps = 8
             if not isinstance(name, str) or not re.fullmatch(r"pack-[0-9a-f]{32}", name):
                 return None, 8
             path = self.directory / "animation-packs" / name

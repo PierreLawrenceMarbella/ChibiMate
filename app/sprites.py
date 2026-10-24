@@ -71,6 +71,8 @@ class SpriteAnimation:
     def __init__(self, root: Path | None, fallback: QPixmap, max_size: QSize, motion_fps: int | None = None,
                  fallback_root: Path | None = None) -> None:
         self.motion_fps = motion_fps
+        self.playback_speed = 1.0
+        self.walking_fps: int | None = None
         self.frames: dict[str, list[QPixmap]] = {"static": [fallback]}
         for name, aliases in ACTION_FOLDERS.items():
             for source_root in (root, fallback_root):
@@ -257,7 +259,7 @@ class SpriteAnimation:
                 self.end_reaction()
             return
         if self.action_active:
-            self._time += elapsed
+            self._time += elapsed * self.playback_speed
             if self._hold_action:
                 return
             if elapsed >= self._action_remaining:
@@ -275,7 +277,7 @@ class SpriteAnimation:
                 if self._blink_remaining <= 0:
                     self._blink_remaining = self._random.uniform(*BLINK_SECONDS)
                     self.show_expression("blink", 0.22)
-        self._time += elapsed
+        self._time += elapsed * self.playback_speed
 
     @property
     def frame_key(self) -> tuple[str, int]:
@@ -292,6 +294,8 @@ class SpriteAnimation:
             index = min(count - 1, int(progress * count))
         else:
             rate = self.motion_fps if self.motion_fps is not None and name not in ("idle", "blink", "sleeping") else FRAME_RATES.get(name, 8)
+            if name == "walk" and self.walking_fps is not None:
+                rate = self.walking_fps
             index = int(self._time * rate) % count
         return name, index
 
