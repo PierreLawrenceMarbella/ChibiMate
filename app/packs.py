@@ -3,6 +3,7 @@ import os
 import re
 import stat
 import zipfile
+import zlib
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
@@ -21,25 +22,28 @@ def safe_parts(name):
         raise ValueError("The pack contains an unsafe path.")
     parts = name.rstrip("/").split("/")
     for part in parts:
-        if (part in ("", ".", "..") or re.search(r'[<>:"|?*]', part)
+        if (part in ("", ".", "..") or re.search(r'[\x00-\x1f<>:"|?*]', part)
                 or part.endswith((".", " ")) or part.split(".")[0].upper() in
                 {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(10)), *(f"LPT{i}" for i in range(10))}):
             raise ValueError("The pack contains an unsafe path.")
     return parts
 
 
-def validate_pack(source: Path, destination: Path):
+def validate_pack(source: Path, destination: Path, cancelled=lambda: False):
     """Copy validated frame bytes into a caller-owned temporary directory."""
     archive = None
     try:
         entries = []
         if source.is_dir():
-            if source.is_symlink():
+            if source.is_symlink() or getattr(source.lstat(), "st_file_attributes", 0) & 0x400:
                 raise ValueError("Linked folders are not supported.")
             for root, dirs, files in os.walk(source, followlinks=False):
                 for name in dirs + files:
+                    if cancelled():
+                        raise InterruptedError("Pack loading cancelled.")
                     path = Path(root) / name
-                    if path.is_symlink() or not path.resolve().is_relative_to(source.resolve()):
+                    if (path.is_symlink() or getattr(path.lstat(), "st_file_attributes", 0) & 0x400
+                            or not path.resolve().is_relative_to(source.resolve())):
                         raise ValueError("Linked files or folders are not supported.")
                     if len(entries) >= MAX_ENTRIES:
                         raise ValueError("Pack contains too many entries (maximum 512).")
@@ -86,6 +90,8 @@ def validate_pack(source: Path, destination: Path):
         counts = {}
         targets = set()
         for action, name, item in candidates:
+            if cancelled():
+                raise InterruptedError("Pack loading cancelled.")
             with (archive.open(item) if archive else item.open("rb")) as stream:
                 data = stream.read(MAX_FILE + 1)
             if len(data) > MAX_FILE:
@@ -111,7 +117,7 @@ def validate_pack(source: Path, destination: Path):
             target.write_bytes(data)
             counts[action] = counts.get(action, 0) + 1
         return counts
-    except (zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError) as error:
         raise ValueError("The ZIP archive is damaged, encrypted, or unsupported.") from error
     finally:
         if archive:

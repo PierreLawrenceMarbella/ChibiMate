@@ -18,24 +18,37 @@ class SpeechBubble(QWidget):
         self._text = ""
         self._below = False
         self._tail_x = 30.0
+        self._placement = None
+        self._area_size = None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.dismiss)
 
     def show_message(self, text: str, anchor: QRect, area: QRect, duration_ms: int) -> None:
         self._text = text
-        width = max(1, min(220, area.width() - 28))
-        bounds = self.fontMetrics().boundingRect(
-            QRect(0, 0, width, 1000), Qt.TextFlag.TextWordWrap, text,
-        )
-        self.resize(min(area.width(), max(90, bounds.width() + 28)),
-                    min(area.height(), bounds.height() + 36))
+        self._placement = None
+        self._fit_to_area(area)
         self.place_near(anchor, area)
         self.update()
         self.show()
         self._timer.start(duration_ms)
 
+    def _fit_to_area(self, area: QRect) -> None:
+        self._area_size = area.size()
+        width = max(1, min(220, area.width() - 28))
+        bounds = self.fontMetrics().boundingRect(
+            QRect(0, 0, width, 1000), Qt.TextFlag.TextWordWrap, self._text,
+        )
+        self.resize(min(area.width(), max(90, bounds.width() + 28)),
+                    min(area.height(), bounds.height() + 36))
+
     def place_near(self, anchor: QRect, area: QRect) -> None:
+        placement = (anchor, area, self.devicePixelRatioF())
+        if self._placement == placement:
+            return
+        self._placement = (QRect(anchor), QRect(area), self.devicePixelRatioF())
+        if self._area_size != area.size():
+            self._fit_to_area(area)
         previous_tail = (self._below, self._tail_x)
         x = anchor.center().x() - self.width() // 2
         above = anchor.top() - self.height() - 8

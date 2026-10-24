@@ -9,8 +9,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from PySide6.QtCore import QIODevice, QSaveFile, QSettings, QStandardPaths
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QPixmap
 from app.behavior import FREQUENCIES
+from app.images import png_image, read_image_bytes
+from app.sprites import _visible_bounds
 
 
 CHARACTER_HEIGHTS = {"Small": 100, "Medium": 150, "Large": 200}
@@ -19,12 +21,12 @@ MIN_HEIGHT, MAX_HEIGHT = 75, 300
 
 def read_png(path: Path) -> tuple[bytes, QPixmap]:
     try:
-        data = path.read_bytes()
+        data = read_image_bytes(path)
     except OSError as error:
         raise OSError(f"Cannot read the character image: {path.name}") from error
-    image = QImage.fromData(data, "PNG")
-    if image.isNull():
-        raise ValueError("Please choose a readable PNG image. This file is invalid or damaged.")
+    image = png_image(data)
+    if _visible_bounds(image).isEmpty():
+        raise ValueError("The PNG has no visible character.")
     return data, QPixmap.fromImage(image)
 
 
@@ -184,13 +186,17 @@ class CharacterPreferences:
             raise OSError("Could not write the imported character image.")
         if not destination.commit():
             raise OSError("Could not finish saving the imported character image.")
-        self.save(filename, height)
+        try:
+            self.save(filename, height)
+        except OSError:
+            (self.directory / filename).unlink(missing_ok=True)
+            raise
         return filename, pixmap
 
     def accept_generated(self, data: bytes, height: int) -> tuple[str, QPixmap]:
-        image = QImage.fromData(data, "PNG")
-        if image.isNull():
-            raise ValueError("The generated image is not a readable PNG.")
+        image = png_image(data)
+        if _visible_bounds(image).isEmpty():
+            raise ValueError("The PNG has no visible character.")
         folder = self.directory / "generated-characters"
         folder.mkdir(parents=True, exist_ok=True)
         filename = f"generated-characters/character-{uuid4().hex}.png"
@@ -213,7 +219,7 @@ class CharacterPreferences:
         if not filename:
             return "packs/default-alya"
         # Identical imported PNGs recover their association even from a new path.
-        return "packs/" + hashlib.sha256((self.directory / filename).read_bytes()).hexdigest()
+        return "packs/" + hashlib.sha256(read_image_bytes(self.directory / filename)).hexdigest()
 
     def pack_for(self, filename: str) -> tuple[Path | None, int]:
         try:

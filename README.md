@@ -102,6 +102,12 @@ decoded total, and 100 MB compressed/expanded. Unsafe paths, links, damaged
 images, and duplicate paths are rejected. This workflow is entirely offline,
 needs no API key, and does not create animation artwork from a static image.
 
+Pack validation and preview preparation run in a cancellable background worker.
+Cancel waits for the current local file operation to finish before closing.
+Custom PNG imports are limited to 32 MB, 8192px per side, and 24 megapixels;
+damaged or entirely transparent characters are rejected. Failed imports keep
+the existing selection. Playback reuses cached frames and repaints on visual changes.
+
 ## Actions and character settings
 
 Supported folders: `idle/`, `walking/`, `running/`, `sitting/`, `waving/`, `happy/`,

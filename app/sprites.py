@@ -10,6 +10,7 @@ from random import Random
 from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QImage, QPainter, QPixmap
 from app.actions import ACTION_FOLDERS, ACTION_SECONDS, normalize_action
+from app.images import png_image, read_image_bytes
 
 
 SPRITE_PATH = Path(__file__).resolve().parent.parent / "assets" / "characters" / "alya"
@@ -67,59 +68,79 @@ def _visible_bounds(image: QImage) -> QRect:
     return QRect(left, top, right - left, bottom - top + 1)
 
 
+def load_frames(root: Path | None, fallback_root: Path | None = None, cancelled=lambda: False) -> dict[str, list[QImage]]:
+    """Prepare aligned QImages off the GUI thread; QPixmaps stay in the GUI."""
+    folders_by_root = []
+    for source_root in (root, fallback_root):
+        try:
+            folders = ({p.name.lower(): p for p in source_root.iterdir() if p.is_dir()}
+                       if source_root is not None else {})
+        except OSError:
+            logging.getLogger(__name__).warning("Sprite folder unavailable; using available fallback frames.")
+            folders = {}
+        folders_by_root.append(folders)
+    result = {}
+    budgets = [{"pixels": 0, "loaded": 0} for _ in folders_by_root]
+    for name, aliases in ACTION_FOLDERS.items():
+        for root_index, folders in enumerate(folders_by_root):
+            budget = budgets[root_index]
+            frames, source_sizes, paths = [], [], []
+            for alias in aliases:
+                folder = folders.get(alias)
+                if folder is not None:
+                    try:
+                        paths = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".png"), key=_frame_order)
+                    except OSError:
+                        logging.getLogger(__name__).warning("Sprite action folder unavailable: %s", name)
+                    if paths:
+                        break
+            for path in paths:
+                if cancelled():
+                    raise InterruptedError("Pack loading cancelled.")
+                if budget["loaded"] >= 256 or budget["pixels"] >= 24 * 1024 * 1024:
+                    logging.getLogger(__name__).warning("Sprite budget reached; using available frames.")
+                    break
+                try:
+                    image = png_image(read_image_bytes(path, 12 * 1024 * 1024),
+                                      max_pixels=max(0, 24 * 1024 * 1024 - budget["pixels"]), max_side=2048)
+                    budget["pixels"] += image.width() * image.height()
+                    budget["loaded"] += 1
+                except (OSError, ValueError):
+                    logging.getLogger(__name__).warning("Skipping unreadable or oversized sprite in action: %s", name)
+                    continue
+                bounds = _visible_bounds(image)
+                if not bounds.isEmpty():
+                    source_sizes.append((image.width(), image.height()))
+                    frames.append(image.copy(bounds).convertToFormat(QImage.Format.Format_RGBA8888))
+            if frames:
+                extents = {}
+                for size, frame in zip(source_sizes, frames):
+                    extents[size] = extents.get(size, QSize()).expandedTo(frame.size())
+                for index, (size, frame) in enumerate(zip(source_sizes, frames)):
+                    canvas = QImage(extents[size], QImage.Format.Format_RGBA8888)
+                    canvas.fill(Qt.GlobalColor.transparent)
+                    painter = QPainter(canvas)
+                    painter.drawImage((canvas.width() - frame.width()) // 2,
+                                      canvas.height() - frame.height(), frame)
+                    painter.end()
+                    frames[index] = canvas
+                if all(frame == frames[0] for frame in frames[1:]):
+                    frames = frames[:1]
+                result[name] = frames
+                break
+    return result
+
+
 class SpriteAnimation:
     def __init__(self, root: Path | None, fallback: QPixmap, max_size: QSize, motion_fps: int | None = None,
-                 fallback_root: Path | None = None) -> None:
+                 fallback_root: Path | None = None, prepared_frames: dict | None = None) -> None:
         self.motion_fps = motion_fps
         self.playback_speed = 1.0
         self.walking_fps: int | None = None
         self.frames: dict[str, list[QPixmap]] = {"static": [fallback]}
-        for name, aliases in ACTION_FOLDERS.items():
-            for source_root in (root, fallback_root):
-                frames = []
-                source_sizes = []
-                # Prefer the first populated alias, without joining two copies of
-                # the same animation. Imported packs normalize these names too.
-                paths = []
-                if source_root is not None and source_root.is_dir():
-                    folders = {p.name.lower(): p for p in source_root.iterdir() if p.is_dir()}
-                    for alias in aliases:
-                        folder = folders.get(alias)
-                        if folder is not None:
-                            paths = sorted((p for p in folder.iterdir() if p.is_file() and p.suffix.lower() == ".png"), key=_frame_order)
-                            if paths:
-                                break
-                for path in paths:
-                    image = QImage(str(path), "PNG")
-                    if image.isNull():
-                        logging.getLogger(__name__).warning("Skipping unreadable sprite: %s", path)
-                        continue
-                    # Remove transparent margins in memory, then anchor all poses at
-                    # bottom-center. The source files and their aspect ratios stay intact.
-                    bounds = _visible_bounds(image)
-                    if not bounds.isEmpty():
-                        source_sizes.append((image.width(), image.height()))
-                        image = image.copy(bounds).convertToFormat(QImage.Format.Format_RGBA8888)
-                        frames.append(QPixmap.fromImage(image))
-                if frames:
-                    # Poses exported on the same canvas share one scale. A wider
-                    # arm pose must not shrink the body on just that frame.
-                    extents = {}
-                    for size, frame in zip(source_sizes, frames):
-                        extents[size] = extents.get(size, QSize()).expandedTo(frame.size())
-                    for index, (size, frame) in enumerate(zip(source_sizes, frames)):
-                        canvas = QPixmap(extents[size])
-                        canvas.fill(Qt.GlobalColor.transparent)
-                        painter = QPainter(canvas)
-                        painter.drawPixmap((canvas.width() - frame.width()) // 2,
-                                           canvas.height() - frame.height(), frame)
-                        painter.end()
-                        frames[index] = canvas
-                    # Identical copies are a static pose, not a fabricated cycle.
-                    if all(frame.toImage() == frames[0].toImage() for frame in frames[1:]):
-                        frames = frames[:1]
-                    self.frames[name] = frames
-                    break
+        prepared = load_frames(root, fallback_root) if prepared_frames is None else prepared_frames
+        self.frames.update({name: [QPixmap.fromImage(image) for image in frames]
+                            for name, frames in prepared.items()})
 
         self._random = Random()
         self._blink_remaining = self._random.uniform(*BLINK_SECONDS)
@@ -144,7 +165,10 @@ class SpriteAnimation:
         return size.expandedTo(QSize(1, 1))
 
     def set_max_size(self, max_size: QSize) -> None:
-        self._max_size = max_size.expandedTo(QSize(1, 1))
+        max_size = max_size.expandedTo(QSize(1, 1))
+        if getattr(self, "_max_size", None) == max_size:
+            return
+        self._max_size = max_size
         sizes = [self._fitted_size(frame) for frames in self.frames.values() for frame in frames]
         self.size = QSize(max(size.width() for size in sizes), max(size.height() for size in sizes))
         self._cache.clear()

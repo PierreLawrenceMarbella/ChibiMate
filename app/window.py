@@ -25,8 +25,8 @@ from app.dialogue import (
     BUBBLE_MILLISECONDS, CLICK_REACTIONS, DIALOGUE, REACTION_SECONDS,
 )
 from app.behavior import BehaviorController, FREQUENCIES, Priority
-from app.sprites import AnimationState, DANCE_SECONDS, SPRITE_PATH, SpriteAnimation
-from app.preferences import CHARACTER_HEIGHTS, MIN_HEIGHT, MAX_HEIGHT, CharacterPreferences
+from app.sprites import AnimationState, DANCE_SECONDS, SPRITE_PATH, SpriteAnimation, load_frames
+from app.preferences import CHARACTER_HEIGHTS, MIN_HEIGHT, MAX_HEIGHT, CharacterPreferences, read_png
 from app.actions import ACTIONS, ACTION_LABELS, normalize_action
 from app.theme import MENU_STYLE
 from app.movement import (
@@ -77,6 +77,10 @@ class CharacterWindow(QWidget):
         self._dialog_open = False
         self._generator = None
         self._settings_dialog = None
+        self._pack_dialog = None
+        self._exit_after_pack = False
+        self._closing = False
+        self._paint_key = None
         self._exit_after_generator = False
         self._quit_from_tray = False
         self._preferences = preferences if preferences is not None else CharacterPreferences()
@@ -198,7 +202,7 @@ class CharacterWindow(QWidget):
         self._tray_menu.addAction("Exit ChibiMate", self._exit_from_tray)
         self._tray.setContextMenu(self._tray_menu)
         self._tray.activated.connect(self._tray_activated)
-        self._menu.aboutToShow.connect(self._update_menu)
+        self._menu.aboutToShow.connect(self._menu_opened)
         self._menu.aboutToHide.connect(self._menu_closed)
         self._position_initially()
 
@@ -215,18 +219,19 @@ class CharacterWindow(QWidget):
 
     def _load_default_character(self) -> QPixmap:
         character = QPixmap()
-        if self._default_character_path.is_file():
-            character.load(str(self._default_character_path), "PNG")
+        try:
+            _, character = read_png(self._default_character_path)
+        except (OSError, ValueError):
+            pass
         if character.isNull():
             logging.getLogger(__name__).warning(
-                "Character PNG is missing or unreadable: %s. Using the built-in placeholder.",
-                self._default_character_path,
+                "Default character PNG is missing or unreadable. Using the built-in placeholder.",
             )
             character = create_placeholder()
         return character
 
-    def _display_limit(self) -> QSize:
-        area = self._available_area()
+    def _display_limit(self, area: QRect | None = None) -> QSize:
+        area = self._available_area() if area is None else area
         width = round(self._character_height * MAX_CHARACTER_SIZE.width() / MAX_CHARACTER_SIZE.height())
         height = self._character_height
         if area is not None:
@@ -250,7 +255,20 @@ class CharacterWindow(QWidget):
             self._bubble.place_near(self.geometry(), area)
         self.update()
 
-    def _apply_character(self, character: QPixmap, filename: str) -> None:
+    def _apply_character(self, character: QPixmap, filename: str, prepared_frames: dict | None = None) -> None:
+        # Prepare first so a loading failure cannot mix the old player with a
+        # newly selected identity. Saved/missing frames fall back inside the loader.
+        if character.isNull():
+            raise ValueError("The selected character image could not be loaded.")
+        pack_root, pack_fps = self._preferences.pack_for(filename)
+        if prepared_frames is not None and not filename:
+            prepared_frames = load_frames(self._default_sprite_path) | prepared_frames
+        sprites = SpriteAnimation(
+            pack_root or (None if filename else self._default_sprite_path), character, self._display_limit(),
+            pack_fps if pack_root is not None else None,
+            fallback_root=self._default_sprite_path if pack_root is not None and not filename else None,
+            prepared_frames=prepared_frames,
+        )
         self._cancel_reaction()
         self._action_priority = Priority.IDLE
         self._behavior.reset()
@@ -259,13 +277,8 @@ class CharacterWindow(QWidget):
         self.setCursor(Qt.CursorShape.OpenHandCursor)
         self._character = character
         self._custom_file = filename
-        pack_root, pack_fps = self._preferences.pack_for(filename)
         self._pack_root = pack_root
-        self._sprites = SpriteAnimation(
-            pack_root or (None if filename else self._default_sprite_path), character, self._display_limit(),
-            pack_fps if pack_root is not None else None,
-            fallback_root=self._default_sprite_path if pack_root is not None and not filename else None,
-        )
+        self._sprites = sprites
         self._bob_offset = 0.0
         self._sprites.playback_speed, self._sprites.walking_fps = self._preferences.animation_options
         self._resize_character()
@@ -291,8 +304,14 @@ class CharacterWindow(QWidget):
         try:
             selected, _ = QFileDialog.getOpenFileName(self, "Change Character", "", "PNG images (*.png)")
             if selected:
+                previous = self._custom_file
                 filename, character = self._preferences.import_character(Path(selected), self._character_height)
-                self._apply_character(character, filename)
+                try:
+                    self._apply_character(character, filename)
+                except (OSError, ValueError):
+                    self._preferences.save(previous, self._character_height)
+                    (self._preferences.directory / filename).unlink(missing_ok=True)
+                    raise
         except (OSError, ValueError) as error:
             self._show_character_error(error)
         finally:
@@ -321,6 +340,8 @@ class CharacterWindow(QWidget):
         dialog = CharacterSettingsDialog(self)
         self._settings_dialog = dialog
         was_dialog_open = self._dialog_open
+        was_active = self._timer.isActive()
+        self._timer.stop()
         self._dialog_open = True
         try:
             dialog.exec()
@@ -329,6 +350,8 @@ class CharacterWindow(QWidget):
             self._settings_dialog = None
             self._clock.restart()
             dialog.deleteLater()
+            if was_active and self.isVisible() and not self._closing:
+                self._timer.start()
 
     def set_animation_options(self, speed: float, fps: int | None) -> None:
         try:
@@ -449,8 +472,11 @@ class CharacterWindow(QWidget):
     def import_animation_pack(self) -> None:
         from app.pack_dialog import PackDialog
         was_dialog_open = self._dialog_open
+        was_active = self._timer.isActive()
+        self._timer.stop()
         filename = self._custom_file
         dialog = PackDialog(self._character, self)
+        self._pack_dialog = dialog
         if not filename:
             dialog.setWindowTitle("Import Animation Pack - Alya")
             dialog.fallback_description = (
@@ -462,15 +488,22 @@ class CharacterWindow(QWidget):
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted and dialog.staging and filename == self._custom_file:
                 self._preferences.accept_pack(filename, Path(dialog.staging.name), dialog.fps.value())
-                self._apply_character(self._character, filename)
+                prepared = {name: [frame.toImage() for frame in frames]
+                            for name, frames in dialog.player.frames.items() if name != "static"}
+                self._apply_character(self._character, filename, prepared_frames=prepared)
         except (OSError, ValueError) as error:
             self._show_character_error(error)
         finally:
             dialog.cleanup()
             dialog.deleteLater()
+            self._pack_dialog = None
             self._dialog_open = was_dialog_open
             self._clock.restart()
             self._update_menu()
+            if was_active and self.isVisible() and not self._closing:
+                self._timer.start()
+            if self._exit_after_pack:
+                QTimer.singleShot(0, self.close)
 
     def _accept_generated(self, data: bytes) -> None:
         try:
@@ -518,12 +551,15 @@ class CharacterWindow(QWidget):
     def _keep_on_screen(self) -> QRect | None:
         area = self._available_area()
         if area is not None:
-            if self.width() > area.width() or self.height() > area.height():
+            limit = self._display_limit(area)
+            if limit != self._sprites._max_size:
                 # A drag or monitor change can put a large character on a smaller
-                # work area. Refit cached art while retaining the preferred size.
-                self._sprites.set_max_size(self._display_limit())
+                # work area. Restore its preferred size when space returns, too.
+                anchor = QPoint(self.x() + self.width() // 2, self.y() + self.height())
+                self._sprites.set_max_size(limit)
                 self._character_size = self._sprites.size
                 self.setFixedSize(self._character_size.width(), self._character_size.height() + 2 * BOB_PADDING)
+                self.move(anchor.x() - self.width() // 2, anchor.y() - self.height())
             position = QPoint(
                 max(area.left(), min(self.x(), area.right() + 1 - self.width())),
                 max(area.top(), min(self.y(), area.bottom() + 1 - self.height())),
@@ -572,6 +608,13 @@ class CharacterWindow(QWidget):
     def _menu_closed(self) -> None:
         self._keep_on_screen()
         self._clock.restart()
+        if self._menu_timer_active and self.isVisible() and not self._closing and not self._dialog_open:
+            self._timer.start()
+
+    def _menu_opened(self) -> None:
+        self._menu_timer_active = self._timer.isActive()
+        self._timer.stop()
+        self._update_menu()
 
     def _update_menu(self) -> None:
         for height, action in self._size_actions.items():
@@ -842,7 +885,20 @@ class CharacterWindow(QWidget):
         self._sprites.advance(elapsed)
         if self._bubble.isVisible() and area is not None:
             self._bubble.place_near(self.geometry(), area)
-        self.update()
+        self._update_animation()
+
+    def _visual_key(self):
+        # Qt rasterizes at subpixel precision. Ignore the vanishing tail of
+        # exponential bob easing once it is below 1/64 of a physical pixel.
+        dpr = self.devicePixelRatioF()
+        return (id(self._sprites), self._sprites.frame_key, self._direction,
+                round(self._bob_offset * dpr * 64), dpr)
+
+    def _update_animation(self) -> None:
+        key = self._visual_key()
+        if key != self._paint_key:
+            self._paint_key = key
+            self.update()
 
     def _advance(self, elapsed: float) -> None:
         if self._drag_offset is not None:
@@ -858,7 +914,7 @@ class CharacterWindow(QWidget):
             self._bob_offset *= math.exp(-12 * elapsed)
             if self._bubble.isVisible() and area is not None:
                 self._bubble.place_near(self.geometry(), area)
-            self.update()
+            self._update_animation()
             return
         if self.animation_state == AnimationState.REACTING or self._reaction_remaining > 0:
             if self._action_priority == Priority.AUTONOMOUS and not self.autonomous_active:
@@ -871,7 +927,7 @@ class CharacterWindow(QWidget):
                 self._sprites.end_reaction()
             if self.animation_state != AnimationState.REACTING:
                 self._action_priority = Priority.IDLE
-            self.update()
+            self._update_animation()
             return
         if self._edge_action:
             if not self._movement_paused and area is not None:
@@ -931,6 +987,7 @@ class CharacterWindow(QWidget):
         return shown
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        self._paint_key = self._visual_key()
         frame = self._sprites.pixmap(self.devicePixelRatioF())
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
@@ -1002,6 +1059,13 @@ class CharacterWindow(QWidget):
         event.accept()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._pack_dialog is not None:
+            if self._pack_dialog.worker is not None:
+                self._exit_after_pack = True
+                event.ignore()
+                self._pack_dialog.reject()
+                return
+            self._pack_dialog.reject()
         if self._generator is not None:
             if self._generator.worker is not None:
                 self._exit_after_generator = True
@@ -1009,6 +1073,7 @@ class CharacterWindow(QWidget):
                 self._generator.reject()
                 return
             self._generator.reject()
+        self._closing = True
         self._timer.stop()
         self._cancel_reaction()
         self._sprites.end_action()

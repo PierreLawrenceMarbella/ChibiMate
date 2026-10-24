@@ -2,11 +2,42 @@
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QElapsedTimer, QSize, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QSize, Qt, QTimer, QThread
 from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout
 
 from app.packs import ACTIONS, validate_pack
-from app.sprites import SpriteAnimation
+from app.sprites import SpriteAnimation, load_frames
+
+
+class PackWorker(QThread):
+    """Only file validation and QImage preparation run in this worker."""
+    def __init__(self, source, parent):
+        super().__init__(parent)
+        self.source = source
+        self.staging = None
+        self.frames = None
+        self.counts = None
+        self.error = ""
+
+    def run(self):
+        try:
+            self.staging = tempfile.TemporaryDirectory(prefix="chibimate-pack-")
+            root = Path(self.staging.name)
+            self.counts = validate_pack(self.source, root, self.isInterruptionRequested)
+            self.frames = load_frames(root, cancelled=self.isInterruptionRequested)
+        except InterruptedError:
+            pass
+        except (OSError, ValueError) as error:
+            self.error = str(error)
+        except Exception:
+            # Do not include arbitrary exception data or user paths in logs/UI.
+            self.error = "Could not prepare this pack. Check its PNG files and try again."
+
+    def cleanup(self):
+        self.frames = None
+        if self.staging:
+            self.staging.cleanup()
+            self.staging = None
 
 
 class PackDialog(QDialog):
@@ -17,6 +48,10 @@ class PackDialog(QDialog):
         self.fallback_description = "Missing actions use idle or the character PNG/dialogue. One frame holds a static pose."
         self.staging = None
         self.player = None
+        self.worker = None
+        self._closing = False
+        self._preview_key = None
+        self.choice_buttons = []
         self.setMinimumWidth(430)
         layout = QVBoxLayout(self)
         choices = QHBoxLayout()
@@ -24,6 +59,7 @@ class PackDialog(QDialog):
             button = QPushButton(title)
             button.clicked.connect(lambda checked=False, zipped=zipped: self.choose(zipped))
             choices.addWidget(button)
+            self.choice_buttons.append(button)
         layout.addLayout(choices)
         self.preview = QLabel("Choose an animation pack for this character.")
         self.preview.setFixedSize(400, 240)
@@ -64,9 +100,44 @@ class PackDialog(QDialog):
         source = (QFileDialog.getOpenFileName(self, "Choose Animation ZIP", "", "ZIP archives (*.zip)")[0]
                   if zipped else QFileDialog.getExistingDirectory(self, "Choose Animation Folder"))
         if source:
-            self.load_source(Path(source))
+            self.start_loading(Path(source))
+
+    def start_loading(self, source):
+        if self.worker is not None:
+            return
+        self.timer.stop()
+        self.apply.setEnabled(False)
+        for button in self.choice_buttons:
+            button.setEnabled(False)
+        self.status.setText("Validating animation pack...")
+        self.worker = PackWorker(source, self)
+        self.worker.finished.connect(self._loaded)
+        self.worker.start()
+
+    def _loaded(self):
+        worker, self.worker = self.worker, None
+        try:
+            if self._closing:
+                return
+            if worker.error or not worker.frames:
+                self.status.setText(worker.error or "No usable action frames found.")
+                self.apply.setEnabled(self.player is not None)
+                self._start_preview_timer()
+            else:
+                player = SpriteAnimation(None, self.character, QSize(220, 220), self.fps.value(),
+                                         prepared_frames=worker.frames)
+                candidate, worker.staging = worker.staging, None
+                self._install_preview(candidate, player, worker.counts)
+        finally:
+            worker.cleanup()
+            worker.deleteLater()
+            for button in self.choice_buttons:
+                button.setEnabled(True)
+            if self._closing:
+                super().reject()
 
     def load_source(self, source):
+        # Synchronous entry point for local checks; file-picker imports use a worker.
         candidate = tempfile.TemporaryDirectory(prefix="chibimate-pack-")
         try:
             counts = validate_pack(source, Path(candidate.name))
@@ -78,6 +149,10 @@ class PackDialog(QDialog):
             candidate.cleanup()
             self.status.setText(str(error))
             return
+        self._install_preview(candidate, player, counts)
+
+    def _install_preview(self, candidate, player, counts):
+        available = [name for name in ACTIONS if name in player.frames]
         if self.staging:
             self.staging.cleanup()
         self.staging = candidate
@@ -93,8 +168,15 @@ class PackDialog(QDialog):
                             + ".\nUnavailable in pack: " + (", ".join(missing) or "none")
                             + ". " + self.fallback_description)
         self.apply.setEnabled(True)
-        self.clock.restart()
-        self.timer.start()
+        self._start_preview_timer()
+
+    def _start_preview_timer(self):
+        self.timer.stop()
+        if self.player and self.worker is None:
+            name = self.player.state
+            if len(self.player.frames.get(name, [])) > 1 or (name == "idle" and "blink" in self.player.frames):
+                self.clock.restart()
+                self.timer.start()
 
     def speed_changed(self, value):
         if self.player:
@@ -109,14 +191,35 @@ class PackDialog(QDialog):
         if name not in ("idle", "walk", "running"):
             self.player.begin_action(name, 3600)
         self.preview.setPixmap(self.player.pixmap(1))
+        self._preview_key = self.player.frame_key
+        self._start_preview_timer()
 
     def tick(self):
         if self.player:
             self.player.advance(min(self.clock.restart() / 1000, 0.1))
-            self.preview.setPixmap(self.player.pixmap(1))
+            if self.player.frame_key != self._preview_key:
+                self.preview.setPixmap(self.player.pixmap(1))
+                self._preview_key = self.player.frame_key
+
+    def reject(self):
+        if self.worker is not None:
+            self._closing = True
+            self.worker.requestInterruption()
+            self.status.setText("Canceling import...")
+        else:
+            super().reject()
+
+    def closeEvent(self, event):
+        if self.worker is not None:
+            event.ignore()
+            self.reject()
+        else:
+            super().closeEvent(event)
 
     def cleanup(self):
         self.timer.stop()
+        self.player = None
+        self.preview.clear()
         if self.staging:
             self.staging.cleanup()
             self.staging = None
