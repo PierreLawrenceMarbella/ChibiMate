@@ -13,6 +13,29 @@ python -m venv .venv
 
 With an activated environment, run `python main.py`.
 
+## Windows executable
+
+On 64-bit Windows with Python 3.11+, build the one-folder release:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build_windows.ps1
+```
+
+Open `dist\ChibiMate\ChibiMate.exe`. Keep the entire `ChibiMate` folder, including
+`_internal`, together; Python and VS Code are not needed to run it. The release
+uses the existing original placeholder. Alya's artwork and eight walking frames
+remain in source mode and are excluded from the public build because redistribution
+permission has not been confirmed. Import your own authorized PNGs and animation
+packs for animated actions. No personal images, credentials, or exported packs
+are bundled; dependency license notices are included under `_internal`.
+
+Both modes retain preferences and imported files in `%LOCALAPPDATA%\ChibiMate`.
+The placeholder and Alya have separate default-pack associations. A second launch
+exits while ChibiMate is already running; restore a hidden companion through its
+tray icon. Normal use works offline without an API key. This is an unsigned
+folder distribution, not an installer; testing on another Windows PC is still needed.
+
 - The character starts near the primary screen's bottom-right, above the taskbar.
 - Alya gently bobs while idle, then walks left or right, facing her direction.
   Idle periods last 3–8 seconds; walks last 2–5 seconds. Screen edges turn her

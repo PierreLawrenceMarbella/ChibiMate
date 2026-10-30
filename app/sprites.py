@@ -11,9 +11,9 @@ from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QImage, QPainter, QPixmap
 from app.actions import ACTION_FOLDERS, ACTION_SECONDS, normalize_action
 from app.images import png_image, read_image_bytes
+from app.resources import SPRITE_PATH
 
 
-SPRITE_PATH = Path(__file__).resolve().parent.parent / "assets" / "characters" / "alya"
 FRAME_RATES = {"walk": 8, "running": 12, "idle": 2, "dance": 8, "sleeping": 2}
 BLINK_SECONDS = (3.0, 6.0)
 DANCE_SECONDS = 6.0

@@ -13,6 +13,7 @@ from app.behavior import FREQUENCIES
 from app.character import create_placeholder
 from app.preferences import MIN_HEIGHT, MAX_HEIGHT
 from app.theme import SETTINGS_STYLE
+from app.resources import PUBLIC_BUILD, RESTORE_LABEL
 
 
 class CharacterPreview(QWidget):
@@ -101,7 +102,7 @@ class CharacterSettingsDialog(QDialog):
         choices.addWidget(self.selection)
         self.change_button = self._button("Change Character", companion.change_character)
         choices.addWidget(self.change_button)
-        choices.addWidget(self._button("Restore Default Alya", companion.restore_default))
+        choices.addWidget(self._button(RESTORE_LABEL, companion.restore_default))
         self.import_button = self._button("Import Animation Pack", companion.import_animation_pack)
         choices.addWidget(self.import_button)
         choices.addStretch()
@@ -224,7 +225,7 @@ class CharacterSettingsDialog(QDialog):
         self._refreshing = True
         try:
             w = self.companion
-            self.selection.setText("Custom character" if w._custom_file else "Default Alya")
+            self.selection.setText("Custom character" if w._custom_file else ("Default companion" if PUBLIC_BUILD else "Default Alya"))
             self.size_slider.setValue(w._character_height)
             self.size_label.setText(f"Character size: {w._character_height}px")
             self.opacity_slider.setValue(w._opacity)
@@ -243,11 +244,11 @@ class CharacterSettingsDialog(QDialog):
             source = frames.get("idle", frames["static"])[0]
             self.preview.set_character(source)
             if w._pack_root is not None:
-                info = "Imported animation pack" + (" with bundled Alya fallbacks" if not w._custom_file else "")
+                info = "Imported animation pack" + (" with bundled Alya fallbacks" if not w._custom_file and not PUBLIC_BUILD else "")
             elif w._custom_file:
                 info = "Static PNG. Import an animation pack to add action frames."
             else:
-                info = "Bundled Alya sprites"
+                info = "Original placeholder (static pose)" if PUBLIC_BUILD else "Bundled Alya sprites"
             self.pack_info.setText(info + f"\nDefault walking rate: {w._sprites.motion_fps or 8} FPS")
             for row, name in enumerate(ACTIONS):
                 count = len(frames.get(name, []))

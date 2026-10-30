@@ -13,6 +13,7 @@ from PySide6.QtGui import QPixmap
 from app.behavior import FREQUENCIES
 from app.images import png_image, read_image_bytes
 from app.sprites import _visible_bounds
+from app.resources import DEFAULT_PACK_ID
 
 
 CHARACTER_HEIGHTS = {"Small": 100, "Medium": 150, "Large": 200}
@@ -159,7 +160,7 @@ class CharacterPreferences:
             _, pixmap = read_png(self.directory / filename)
             return filename, pixmap
         except (OSError, ValueError) as error:
-            logging.getLogger(__name__).warning("Saved character unavailable; using default Alya: %s", error)
+            logging.getLogger(__name__).warning("Saved character unavailable; using the default character: %s", error)
             return "", None
 
     def save(self, filename: str, height: int) -> None:
@@ -217,7 +218,7 @@ class CharacterPreferences:
 
     def _pack_key(self, filename: str) -> str:
         if not filename:
-            return "packs/default-alya"
+            return "packs/" + DEFAULT_PACK_ID
         # Identical imported PNGs recover their association even from a new path.
         return "packs/" + hashlib.sha256(read_image_bytes(self.directory / filename)).hexdigest()
 

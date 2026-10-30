@@ -29,12 +29,12 @@ from app.sprites import AnimationState, DANCE_SECONDS, SPRITE_PATH, SpriteAnimat
 from app.preferences import CHARACTER_HEIGHTS, MIN_HEIGHT, MAX_HEIGHT, CharacterPreferences, read_png
 from app.actions import ACTIONS, ACTION_LABELS, normalize_action
 from app.theme import MENU_STYLE
+from app.resources import CHARACTER_PATH, DEFAULT_NAME, PUBLIC_BUILD, RESTORE_LABEL
 from app.movement import (
     CURSOR_SAMPLE_SECONDS, EDGE_MARGIN, FOLLOW_GAP, FOLLOW_HYSTERESIS, clamp_position, step_towards,
 )
 
 
-CHARACTER_PATH = Path(__file__).resolve().parent.parent / "assets" / "alya.png"
 MAX_CHARACTER_SIZE = QSize(200, 150)
 WALK_SPEED = 32.0  # Logical pixels per second.
 RUN_SPEED = 70.0
@@ -47,7 +47,7 @@ BOB_PADDING = math.ceil(BOB_AMPLITUDE)
 
 class CharacterWindow(QWidget):
     def __init__(self, character_path: Path = CHARACTER_PATH,
-                 sprite_path: Path = SPRITE_PATH,
+                 sprite_path: Path | None = SPRITE_PATH,
                  preferences: CharacterPreferences | None = None) -> None:
         super().__init__()
         self.setWindowTitle("ChibiMate")
@@ -128,7 +128,7 @@ class CharacterWindow(QWidget):
             action.triggered.connect(lambda checked=False, height=height: self.set_character_size(height))
             self._size_group.addAction(action)
             self._size_actions[height] = action
-        restore_action = self._menu.addAction("Restore Default Alya", self.restore_default)
+        restore_action = self._menu.addAction(RESTORE_LABEL, self.restore_default)
         generator_action = self._menu.addAction("AI Chibi Generator", self.open_generator)
         self._pack_action = self._menu.addAction("Import Animation Pack", self.import_animation_pack)
         self._menu.addSeparator()
@@ -218,6 +218,8 @@ class CharacterWindow(QWidget):
         self._update_menu()
 
     def _load_default_character(self) -> QPixmap:
+        if PUBLIC_BUILD and self._default_character_path == CHARACTER_PATH:
+            return create_placeholder()
         character = QPixmap()
         try:
             _, character = read_png(self._default_character_path)
@@ -477,8 +479,8 @@ class CharacterWindow(QWidget):
         filename = self._custom_file
         dialog = PackDialog(self._character, self)
         self._pack_dialog = dialog
-        if not filename:
-            dialog.setWindowTitle("Import Animation Pack - Alya")
+        if not filename and self._default_sprite_path is not None:
+            dialog.setWindowTitle(f"Import Animation Pack - {DEFAULT_NAME}")
             dialog.fallback_description = (
                 "Missing or insufficient actions keep bundled Alya animations when available, otherwise her static PNG/dialogue."
             )
