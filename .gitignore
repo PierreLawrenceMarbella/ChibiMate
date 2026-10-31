@@ -11,3 +11,15 @@ credentials*.json
 *.pem
 build/
 dist/
+releases/
+*.log
+*.tmp
+*.part
+# Local runtime data and import staging (normally outside the repo).
+user-data/
+generated-characters/
+animation-packs/
+pack-staging/
+preferences.ini
+instance.lock
+local-credentials/
